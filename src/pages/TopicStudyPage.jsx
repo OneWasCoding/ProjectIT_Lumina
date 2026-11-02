@@ -34,6 +34,8 @@ import {
 export default function TopicStudyPage({ onBackToTOC }) {
   const {
     currentTopic,
+    setCurrentTopic,
+    topics,
     selectedSubject,
     profile,
     user,
@@ -56,13 +58,14 @@ export default function TopicStudyPage({ onBackToTOC }) {
   const [activeTab, setActiveTab] = useState('text') // 'text' | 'presentation' | 'insights' | 'summary' | 'quiz'
   const isFaculty = profile?.role === 'faculty'
 
-  // Load content & quizzes for this topic
+  // Load content, quizzes & student results for this topic
   useEffect(() => {
     if (currentTopic?.id) {
       fetchTopicContent(currentTopic.id)
       fetchQuizzes(currentTopic.id)
+      if (!isFaculty) fetchMyResults()
     }
-  }, [currentTopic, fetchTopicContent, fetchQuizzes])
+  }, [currentTopic, isFaculty, fetchTopicContent, fetchQuizzes, fetchMyResults])
 
   // Content filtered by this topic and type
   const topicItems = topicContent.filter(c => c.topic_id === currentTopic?.id)
@@ -74,9 +77,31 @@ export default function TopicStudyPage({ onBackToTOC }) {
 
   // Find results for quizzes in this topic
   const topicQuizzes = quizzes.filter(q => q.topic_id === currentTopic?.id)
+  const primaryQuiz = topicQuizzes[0] || null
   const topicResults = quizResults.filter(r => topicQuizzes.some(q => q.id === r.quiz_id))
   const hasPassedTopic = topicResults.some(r => r.passed)
   const latestResult = topicResults[0]
+
+  // Next topic in the same subject
+  const sortedSubjectTopics = [...(topics || [])]
+    .filter(t => !selectedSubject?.id || t.subject_id === selectedSubject.id)
+    .sort((a, b) => (a.order_number || 0) - (b.order_number || 0))
+  const currentTopicIdx = sortedSubjectTopics.findIndex(t => t.id === currentTopic?.id)
+  const nextTopic = currentTopicIdx >= 0 ? sortedSubjectTopics[currentTopicIdx + 1] || null : null
+
+  const handleNextTopic = () => {
+    if (!nextTopic) return
+    setCurrentTopic(nextTopic)
+    setActiveTab('text')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const quizTabLabel = (() => {
+    if (!primaryQuiz) return 'Quiz'
+    if (primaryQuiz.quiz_type === 'gform') return 'Quiz (Google Form)'
+    const qCount = (primaryQuiz.quiz_questions || []).length
+    return `Quiz (${primaryQuiz.time_limit_minutes || 10} Mins${qCount ? ` · ${qCount} Items` : ''})`
+  })()
 
   // Modals
   const [showAddTextModal, setShowAddTextModal] = useState(false)
@@ -101,31 +126,61 @@ export default function TopicStudyPage({ onBackToTOC }) {
         </div>
 
         <div className="topic-header-actions">
-          {hasPassedTopic ? (
+          {topicQuizzes.length === 0 ? (
+            <div className="badge badge-purple flex items-center gap-6">
+              <CheckCircle2 style={{ width: 14, height: 14 }} />
+              No Quiz Required
+            </div>
+          ) : hasPassedTopic ? (
             <div className="badge badge-green flex items-center gap-6">
               <CheckCircle2 style={{ width: 14, height: 14 }} />
-              Passed (Proceed Enabled)
+              {primaryQuiz?.quiz_type === 'gform' ? 'Form Completed' : 'Passed (Proceed Enabled)'}
             </div>
           ) : latestResult ? (
             <div className="badge badge-danger flex items-center gap-6">
               <XCircle style={{ width: 14, height: 14 }} />
-              Failed (75% Required)
+              Failed ({primaryQuiz?.passing_score || 75}% Required)
             </div>
           ) : (
             <div className="badge badge-yellow flex items-center gap-6">
               <Clock style={{ width: 14, height: 14 }} />
-              Quiz Not Taken
+              {primaryQuiz?.quiz_type === 'gform' ? 'Google Form Pending' : 'Quiz Not Taken'}
             </div>
           )}
 
-          <button
-            className="btn btn-gradient btn-sm flex items-center gap-6"
-            onClick={() => setActiveTab('quiz')}
-            id="btn-start-topic-quiz"
-          >
-            <Play style={{ width: 14, height: 14 }} />
-            {hasPassedTopic ? 'Retake Quiz' : 'Start Topic Quiz'}
-          </button>
+          {topicQuizzes.length > 0 ? (
+            <button
+              className="btn btn-gradient btn-sm flex items-center gap-6"
+              onClick={() => setActiveTab('quiz')}
+              id="btn-start-topic-quiz"
+            >
+              <Play style={{ width: 14, height: 14 }} />
+              {primaryQuiz?.quiz_type === 'gform'
+                ? hasPassedTopic ? 'View Google Form' : 'Open Google Form Quiz'
+                : hasPassedTopic ? 'Retake Quiz' : 'Start Topic Quiz'}
+            </button>
+          ) : isFaculty ? (
+            <button
+              className="btn btn-gradient btn-sm flex items-center gap-6"
+              onClick={() => {
+                setActiveTab('quiz')
+                setShowCreateQuizModal(true)
+              }}
+              id="btn-start-topic-quiz"
+            >
+              <Plus style={{ width: 14, height: 14 }} />
+              Add Topic Quiz
+            </button>
+          ) : nextTopic ? (
+            <button
+              className="btn btn-gradient btn-sm flex items-center gap-6"
+              onClick={handleNextTopic}
+              id="btn-next-topic-header"
+            >
+              Next Topic
+              <ChevronRight style={{ width: 14, height: 14 }} />
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -135,7 +190,7 @@ export default function TopicStudyPage({ onBackToTOC }) {
           <div className="topic-meta-label">LESSON {currentTopic?.order_number}</div>
           <h1 className="topic-hero-title">{currentTopic?.title}</h1>
           <p className="topic-hero-desc">
-            {currentTopic?.summary || 'Explore the lesson materials, interactive presentation slides, insights, and complete the 10-minute quiz to unlock the next topic.'}
+            {currentTopic?.summary || 'Explore the lesson materials, interactive presentation slides, insights, and complete the topic quiz to unlock the next topic.'}
           </p>
         </div>
       </div>
@@ -184,8 +239,12 @@ export default function TopicStudyPage({ onBackToTOC }) {
           id="tab-quiz"
         >
           <Award style={{ width: 16, height: 16 }} />
-          Quiz (10 Mins · Max 50 Items)
-          {hasPassedTopic && <span className="tab-pill-passed">75%+</span>}
+          {quizTabLabel}
+          {hasPassedTopic && (
+            <span className="tab-pill-passed">
+              {primaryQuiz?.quiz_type === 'gform' ? 'Done' : `${primaryQuiz?.passing_score || 75}%+`}
+            </span>
+          )}
         </button>
       </div>
 
@@ -251,6 +310,8 @@ export default function TopicStudyPage({ onBackToTOC }) {
             onCompleteExternal={completeExternalQuiz}
             onDeleteQuiz={deleteQuiz}
             onBackToTOC={onBackToTOC}
+            nextTopic={nextTopic}
+            onNextTopic={handleNextTopic}
           />
         )}
       </div>
