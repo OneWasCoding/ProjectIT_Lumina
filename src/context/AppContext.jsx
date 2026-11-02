@@ -597,42 +597,88 @@ export function AppProvider({ children }) {
     }
   }, [])
 
-  const addQuiz = useCallback(async (topicId, title, timeLimit, maxItems, passingScore, questions) => {
+  // Loads the quizzes of several topics at once (used by the table of contents to know which topics have a quiz)
+  const fetchSubjectQuizzes = useCallback(async (topicIds) => {
+    const ids = (topicIds || []).filter(id => Number.isInteger(Number(id)))
+    if (ids.length === 0) return
     try {
-      const topicIdNum = Number(topicId)
-      if (!isNaN(topicIdNum) && Number.isInteger(topicIdNum) && topicIdNum > 0) {
+      const { data, error } = await supabase
+        .from('quizzes')
+        .select('*, quiz_questions(*)')
+        .in('topic_id', ids)
+        .order('created_at')
+      if (!error && data) {
+        setQuizzes(prev => [...prev.filter(q => !ids.includes(q.topic_id)), ...data])
+      }
+    } catch {
+      // keep current quizzes
+    }
+  }, [])
+
+  // extra: { quizType: 'internal' | 'gform', externalUrl?: string }
+  const addQuiz = useCallback(async (topicId, title, timeLimit, maxItems, passingScore, questions, extra = {}) => {
+    const quizType = extra.quizType === 'gform' ? 'gform' : 'internal'
+    const externalUrl = quizType === 'gform' ? (extra.externalUrl || '').trim() : null
+    const topicIdNum = Number(topicId)
+    const remote = isUuid(user?.id) && Number.isInteger(topicIdNum) && topicIdNum > 0
+
+    if (remote) {
+      try {
+        const base = {
+          topic_id: topicIdNum,
+          title,
+          time_limit_minutes: timeLimit,
+          max_items: maxItems,
+          passing_score: passingScore,
+          created_by: user.id,
+        }
+        // quiz_type / external_url only exist after running the latest supabase_schema.sql
+        const payload = quizType === 'gform' ? { ...base, quiz_type: 'gform', external_url: externalUrl } : base
+
         const { data: quiz, error: quizError } = await supabase
           .from('quizzes')
-          .insert({
-            topic_id: topicIdNum,
-            title,
-            time_limit_minutes: timeLimit,
-            max_items: maxItems,
-            passing_score: passingScore,
-            ...(isUuid(user?.id) ? { created_by: user.id } : {}),
-          })
+          .insert(payload)
           .select()
           .single()
 
-        if (!quizError && quiz) {
-          const questionsWithQuizId = questions.map((q, idx) => ({
+        if (quizError || !quiz) {
+          const missingCol = /quiz_type|external_url|column|schema cache/i.test(quizError?.message || '')
+          showToast(
+            missingCol && quizType === 'gform'
+              ? 'Run the latest supabase_schema.sql in Supabase to enable Google Forms quizzes.'
+              : quizError?.message || 'Could not create the quiz',
+            'error'
+          )
+          return { error: quizError || new Error('Quiz insert failed') }
+        }
+
+        if (quizType === 'internal') {
+          const rows = questions.map((q, idx) => ({
             quiz_id: quiz.id,
             question: q.question,
             options: q.options,
             correct_answer: q.correctAnswer,
             order_number: idx + 1,
           }))
-
-          await supabase.from('quiz_questions').insert(questionsWithQuizId)
-          fetchQuizzes(topicId)
-          showToast('Quiz created and uploaded to database!', 'success')
-          return { data: quiz }
+          const { error: qError } = await supabase.from('quiz_questions').insert(rows)
+          if (qError) {
+            // Never leave a quiz without its questions behind
+            await supabase.from('quizzes').delete().eq('id', quiz.id)
+            showToast(qError.message || 'Could not save the quiz questions', 'error')
+            return { error: qError }
+          }
         }
+
+        await fetchQuizzes(topicId)
+        showToast(quizType === 'gform' ? 'Google Form quiz published!' : 'Quiz published to your students!', 'success')
+        return { data: quiz }
+      } catch (e) {
+        showToast(e.message || 'Could not create the quiz', 'error')
+        return { error: e }
       }
-    } catch (e) {
-      console.warn('Supabase addQuiz fallback:', e)
     }
 
+    // Local demo session
     const localQuiz = {
       id: 'quiz-' + Date.now(),
       topic_id: topicId,
@@ -640,17 +686,72 @@ export function AppProvider({ children }) {
       time_limit_minutes: timeLimit,
       max_items: maxItems,
       passing_score: passingScore,
-      quiz_questions: questions.map((q, i) => ({
+      quiz_type: quizType,
+      external_url: externalUrl,
+      created_at: new Date().toISOString(),
+      quiz_questions: quizType === 'gform' ? [] : questions.map((q, i) => ({
         id: `q-${i + 1}`,
         question: q.question,
         options: q.options,
         correct_answer: q.correctAnswer,
+        order_number: i + 1,
       })),
     }
-    setQuizzes(prev => [localQuiz, ...prev])
-    showToast('Quiz uploaded successfully!', 'success')
+    setQuizzes(prev => [...prev, localQuiz])
+    showToast('Quiz published!', 'success')
     return { data: localQuiz }
   }, [user, showToast, fetchQuizzes])
+
+  const deleteQuiz = useCallback(async (quizId) => {
+    if (isUuid(quizId) && isUuid(user?.id)) {
+      const { error } = await supabase.from('quizzes').delete().eq('id', quizId)
+      if (error) {
+        showToast(error.message || 'Could not delete the quiz', 'error')
+        return { error }
+      }
+    }
+    setQuizzes(prev => prev.filter(q => q.id !== quizId))
+    setQuizResults(prev => prev.filter(r => r.quiz_id !== quizId))
+    setAllResults(prev => prev.filter(r => r.quiz_id !== quizId))
+    showToast('Quiz deleted', 'info')
+    return {}
+  }, [user, showToast])
+
+  // Google Forms quizzes can't be auto-graded: the student confirms they finished it,
+  // which is recorded as a completed attempt (and unlocks the next topic).
+  const completeExternalQuiz = useCallback(async (quiz) => {
+    const row = {
+      quiz_id: quiz.id,
+      student_id: user?.id,
+      score: 1,
+      total_items: 1,
+      percentage: 100,
+      passed: true,
+      answers: { external: true },
+    }
+    let saved = null
+    if (isUuid(quiz.id) && isUuid(user?.id)) {
+      const { data, error } = await supabase.from('quiz_results').insert(row).select().single()
+      if (error) {
+        showToast(error.message || 'Could not record your completion', 'error')
+        return { error }
+      }
+      saved = data
+    }
+    const result = {
+      ...row,
+      id: saved?.id || 'res-' + Date.now(),
+      submitted_at: saved?.submitted_at || new Date().toISOString(),
+      quizzes: { id: quiz.id, title: quiz.title, topic_id: quiz.topic_id },
+      users_profile: {
+        full_name: profile?.full_name || user?.user_metadata?.full_name || user?.email || 'Student',
+      },
+    }
+    setQuizResults(prev => [result, ...prev])
+    setAllResults(prev => [result, ...prev])
+    showToast('Marked as completed. Next topic unlocked!', 'success')
+    return { data: result }
+  }, [user, profile, showToast])
 
   // ========== Quiz Results ==========
 
@@ -693,6 +794,8 @@ export function AppProvider({ children }) {
 
           if (!error && data) {
             serverResult = data
+          } else if (error) {
+            showToast('Your score could not be saved to the server: ' + error.message, 'error')
           }
         }
       }
@@ -700,6 +803,7 @@ export function AppProvider({ children }) {
       console.warn('Supabase submitQuizResult RPC fallback:', e)
     }
 
+    const quizMeta = quizzes.find(q => q.id === quizId)
     const newResult = {
       id: serverResult?.id || serverResult?.resultId || ('res-' + Date.now()),
       quiz_id: quizId,
@@ -712,8 +816,8 @@ export function AppProvider({ children }) {
       submitted_at: new Date().toISOString(),
       quizzes: {
         id: quizId,
-        title: currentTopic?.title ? `${currentTopic.title} Quiz` : 'Topic Quiz',
-        topic_id: currentTopic?.id,
+        title: quizMeta?.title || (currentTopic?.title ? `${currentTopic.title} Quiz` : 'Topic Quiz'),
+        topic_id: quizMeta?.topic_id ?? currentTopic?.id,
       },
       users_profile: {
         full_name: profile?.full_name || user?.user_metadata?.full_name || user?.email || 'Student User',
@@ -731,7 +835,7 @@ export function AppProvider({ children }) {
     )
 
     return { data: newResult }
-  }, [user, profile, currentTopic, showToast])
+  }, [user, profile, currentTopic, quizzes, showToast])
 
   const fetchMyResults = useCallback(async () => {
     try {
@@ -742,7 +846,7 @@ export function AppProvider({ children }) {
           .eq('student_id', user.id)
           .order('submitted_at', { ascending: false })
 
-        if (data && data.length > 0) setQuizResults(data)
+        if (!error && data) setQuizResults(data)
         if (error) console.warn('Supabase fetchMyResults:', error.message)
       }
     } catch {
@@ -757,7 +861,7 @@ export function AppProvider({ children }) {
         .select('*, users_profile!student_id(full_name), quizzes(title, topic_id)')
         .order('submitted_at', { ascending: false })
 
-      if (data && data.length > 0) setAllResults(data)
+      if (!error && data) setAllResults(data)
       if (error) console.warn('Supabase fetchAllResults:', error.message)
     } catch {
       // Local allResults remain
@@ -1161,7 +1265,9 @@ export function AppProvider({ children }) {
     quizzes,
     fetchQuizzes,
     addQuiz,
-
+    fetchSubjectQuizzes,
+    deleteQuiz,
+    completeExternalQuiz,
     // Results
     quizResults,
     fetchMyResults,

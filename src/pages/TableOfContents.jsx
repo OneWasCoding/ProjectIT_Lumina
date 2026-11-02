@@ -17,11 +17,12 @@ import {
 export default function TableOfContents({ onSelectTopic }) {
   const {
     profile, selectedSubject, setSelectedSubject,
-    topics, fetchTopics, addTopic, quizResults, fetchMyResults,
+    topics, fetchTopics, addTopic, quizResults, fetchMyResults, quizzes, fetchSubjectQuizzes,
     showToast,
   } = useApp()
   const [showCreate, setShowCreate] = useState(false)
   const [topicStatuses, setTopicStatuses] = useState({})
+  const [quizzesLoaded, setQuizzesLoaded] = useState(false)
   const isFaculty = profile?.role === 'faculty'
 
   useEffect(() => {
@@ -31,15 +32,25 @@ export default function TableOfContents({ onSelectTopic }) {
     }
   }, [selectedSubject, fetchTopics, fetchMyResults, isFaculty])
 
+  // Load which topics have a quiz so topics without one never block progress
+  useEffect(() => {
+    if (topics.length && !isFaculty) {
+      setQuizzesLoaded(false)
+      fetchSubjectQuizzes(topics.map(t => t.id)).then(() => setQuizzesLoaded(true))
+    }
+  }, [topics, isFaculty, fetchSubjectQuizzes])
+
   // Check pass/fail status for each topic
   useEffect(() => {
     if (!topics.length || isFaculty) return
 
     const statuses = {}
     topics.forEach(topic => {
-      const topicResults = quizResults.filter(r => {
-        return r.quizzes?.topic_id === topic.id || r.quiz_id === `quiz-default-${topic.id}`
-      })
+      if (quizzesLoaded && !quizzes.some(q => q.topic_id === topic.id)) {
+        statuses[topic.id] = 'no_quiz'
+        return
+      }
+      const topicResults = quizResults.filter(r => r.quizzes?.topic_id === topic.id)
 
       if (topicResults.length === 0) {
         statuses[topic.id] = 'not_taken'
@@ -49,7 +60,7 @@ export default function TableOfContents({ onSelectTopic }) {
       }
     })
     setTopicStatuses(statuses)
-  }, [topics, quizResults, isFaculty])
+  }, [topics, quizzes, quizzesLoaded, quizResults, isFaculty])
 
   // Determine if a topic is locked (previous topics not passed with 75%)
   const isTopicLocked = useCallback((topicIndex) => {
@@ -58,7 +69,8 @@ export default function TableOfContents({ onSelectTopic }) {
 
     for (let i = 0; i < topicIndex; i++) {
       const prevTopic = topics[i]
-      if (topicStatuses[prevTopic.id] !== 'passed') {
+      const status = topicStatuses[prevTopic.id]
+      if (status !== 'passed' && status !== 'no_quiz') {
         return true
       }
     }
@@ -75,6 +87,9 @@ export default function TableOfContents({ onSelectTopic }) {
 
   const getStatusBadge = (topicId) => {
     const status = topicStatuses[topicId]
+    if (status === 'no_quiz') {
+      return <span className="badge badge-purple">No quiz yet</span>
+    }
     if (status === 'passed') {
       return (
         <span className="badge badge-green flex items-center gap-4">

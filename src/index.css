@@ -3602,3 +3602,13 @@ img {
   background: rgba(0, 212, 170, 0.07);
 }
 
+
+/* ========== Google Forms quiz embed ========== */
+.gform-embed-frame {
+  width: 100%;
+  min-height: 720px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: #fff;
+  margin-top: 8px;
+}

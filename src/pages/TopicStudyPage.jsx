@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { formatFileSize } from '../lib/presentationParser.js'
+import QuizSection, { FacultyQuizUploadModal } from './QuizPanel.jsx'
 import {
   ArrowLeft,
   BookOpen,
@@ -44,6 +45,8 @@ export default function TopicStudyPage({ onBackToTOC }) {
     quizzes,
     fetchQuizzes,
     addQuiz,
+    deleteQuiz,
+    completeExternalQuiz,
     submitQuizResult,
     quizResults,
     fetchMyResults,
@@ -241,10 +244,12 @@ export default function TopicStudyPage({ onBackToTOC }) {
           <QuizSection
             topic={currentTopic}
             quizzes={topicQuizzes}
+            results={topicResults}
             isFaculty={isFaculty}
             onOpenCreateModal={() => setShowCreateQuizModal(true)}
             onSubmitResult={submitQuizResult}
-            onRefresh={() => fetchQuizzes(currentTopic.id)}
+            onCompleteExternal={completeExternalQuiz}
+            onDeleteQuiz={deleteQuiz}
             onBackToTOC={onBackToTOC}
           />
         )}
@@ -276,7 +281,8 @@ export default function TopicStudyPage({ onBackToTOC }) {
               quizData.timeLimit,
               quizData.maxItems,
               quizData.passingScore,
-              quizData.questions
+              quizData.questions,
+              { quizType: quizData.quizType, externalUrl: quizData.externalUrl }
             )
             if (!error) setShowCreateQuizModal(false)
           }}
@@ -1182,7 +1188,7 @@ function InsightsSection({ topic, contents, onSaveInsight }) {
    SECTION 4: TOPIC SUMMARY
    ============================================================ */
 function SummarySection({ topic, textContents = [], presentationContents = [], quizzes = [], onProceedToQuiz }) {
-  const hasQuiz = quizzes.length > 0 && quizzes[0]?.quiz_questions?.length > 0
+  const hasQuiz = quizzes.length > 0 && (quizzes[0]?.quiz_type === 'gform' || quizzes[0]?.quiz_questions?.length > 0)
 
   return (
     <div className="section-card">
@@ -1239,12 +1245,12 @@ function SummarySection({ topic, textContents = [], presentationContents = [], q
         </div>
 
         <div className="summary-point-card">
-          <div className="summary-icon-box amber">{hasQuiz ? quizzes[0].quiz_questions.length : 0}</div>
+          <div className="summary-icon-box amber">{hasQuiz ? (quizzes[0].quiz_type === 'gform' ? 1 : quizzes[0].quiz_questions.length) : 0}</div>
           <div>
             <h4>Topic Assessment</h4>
             <p>
               {hasQuiz
-                ? `${quizzes[0].quiz_questions.length} question(s) · ${quizzes[0].time_limit_minutes || 10} mins · ${quizzes[0].passing_score || 75}% required to pass.`
+                ? quizzes[0].quiz_type === 'gform' ? 'Google Forms quiz shared by your instructor.' : ` question(s) · ${quizzes[0].time_limit_minutes || 10} mins · ${quizzes[0].passing_score || 75}% required to pass.`
                 : 'Your instructor has not uploaded a quiz for this topic yet.'}
             </p>
           </div>
@@ -1267,403 +1273,6 @@ function SummarySection({ topic, textContents = [], presentationContents = [], q
             <Play style={{ width: 18, height: 18 }} />
             Launch Topic Quiz
           </button>
-        </div>
-      )}
-    </div>
-  )
-}
-
-/* ============================================================
-   SECTION 5: QUIZ RUNNER & FACULTY UPLOAD
-   ============================================================ */
-function QuizSection({
-  topic,
-  quizzes,
-  isFaculty,
-  onOpenCreateModal,
-  onSubmitResult,
-  onRefresh,
-  onBackToTOC,
-}) {
-  const activeQuiz = (quizzes && quizzes.length > 0) ? quizzes[0] : null
-  const questions = (activeQuiz?.quiz_questions && activeQuiz.quiz_questions.length > 0)
-    ? activeQuiz.quiz_questions
-    : []
-
-  // Quiz running state
-  const [quizStarted, setQuizStarted] = useState(false)
-  const [currentQIndex, setCurrentQIndex] = useState(0)
-  const [answers, setAnswers] = useState({})
-  const [timeLeft, setTimeLeft] = useState(10 * 60) // 10 minutes in seconds
-  const [submitted, setSubmitted] = useState(false)
-  const [resultData, setResultData] = useState(null)
-  const timerRef = useRef(null)
-  const answersRef = useRef({})
-  const handleSubmitRef = useRef(null)
-
-  answersRef.current = answers
-
-  // Start Quiz
-  const handleStartQuiz = () => {
-    if (!activeQuiz || questions.length === 0) return
-    setQuizStarted(true)
-    setCurrentQIndex(0)
-    setAnswers({})
-    answersRef.current = {}
-    setSubmitted(false)
-    setResultData(null)
-    const limitMinutes = activeQuiz.time_limit_minutes || 10
-    setTimeLeft(limitMinutes * 60)
-  }
-
-  const handleSubmitQuiz = async (auto = false) => {
-    if (!activeQuiz) return
-    if (timerRef.current) clearInterval(timerRef.current)
-    const currentAnswers = answersRef.current || {}
-    let score = 0
-    questions.forEach((q, idx) => {
-      const selected = currentAnswers[idx]
-      const correct = q.correct_answer !== undefined ? q.correct_answer : q.correctAnswer
-      if (selected === correct) {
-        score++
-      }
-    })
-
-    const total = questions.length
-    const percentage = total > 0 ? Math.round((score / total) * 100) : 0
-    const passingThreshold = activeQuiz.passing_score || 75
-    const passed = percentage >= passingThreshold
-
-    setResultData({
-      score,
-      total,
-      percentage,
-      passed,
-      passingThreshold,
-      answers: currentAnswers,
-      autoSubmitted: auto,
-    })
-    setSubmitted(true)
-
-    // Save result to database
-    await onSubmitResult(activeQuiz.id, score, total, percentage, passed, currentAnswers)
-  }
-
-  handleSubmitRef.current = handleSubmitQuiz
-
-  // Timer countdown
-  useEffect(() => {
-    if (!quizStarted || submitted) return
-
-    timerRef.current = setInterval(() => {
-      setTimeLeft(prev => (prev > 0 ? prev - 1 : 0))
-    }, 1000)
-
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current)
-    }
-  }, [quizStarted, submitted])
-
-  // Auto-submit exactly once when the countdown reaches zero (kept out of the state
-  // updater so StrictMode's double-invocation can't submit twice)
-  useEffect(() => {
-    if (quizStarted && !submitted && timeLeft === 0) {
-      handleSubmitRef.current?.(true)
-    }
-  }, [timeLeft, quizStarted, submitted])
-
-  const formatTimer = (seconds) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
-  }
-
-  const selectOption = (qIndex, optionIndex) => {
-    if (submitted) return
-    setAnswers(prev => ({ ...prev, [qIndex]: optionIndex }))
-  }
-
-  return (
-    <div className="section-card">
-      {/* Quiz Top Action Bar */}
-      <div className="flex items-center justify-between mb-24" style={{ flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 className="section-title">{activeQuiz ? activeQuiz.title : `${topic?.title || 'Topic'} Quiz`}</h2>
-          <p className="section-subtitle">
-            {activeQuiz && questions.length > 0 ? (
-              <>
-                Time Limit: <strong>{activeQuiz.time_limit_minutes || 10} Minutes</strong> · Items: <strong>{questions.length}</strong> · Passing Score: <strong>{activeQuiz.passing_score || 75}%</strong>
-              </>
-            ) : (
-              'Topic assessment and quiz evaluation.'
-            )}
-          </p>
-        </div>
-
-        {isFaculty && (
-          <button
-            className="btn btn-outline btn-sm flex items-center gap-6"
-            onClick={onOpenCreateModal}
-            id="btn-faculty-upload-quiz"
-          >
-            <Plus style={{ width: 16, height: 16 }} />
-            Faculty Quiz Upload
-          </button>
-        )}
-      </div>
-
-      {/* State 0: No Quiz Uploaded by Faculty Yet */}
-      {(!activeQuiz || questions.length === 0) && (
-        <div className="empty-state-mini" style={{ padding: '48px 24px' }}>
-          <Award style={{ width: 40, height: 40, color: 'var(--text-muted)', marginBottom: 10 }} />
-          <p style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)', marginBottom: 4 }}>
-            No Quiz Uploaded Yet
-          </p>
-          <p style={{ fontSize: 13, maxWidth: 460, margin: '0 auto' }}>
-            {isFaculty
-              ? 'Click "Faculty Quiz Upload" above to create and publish the quiz for this topic.'
-              : 'Your instructor has not uploaded a quiz for this topic yet.'}
-          </p>
-        </div>
-      )}
-
-      {/* State A: Before Starting */}
-      {activeQuiz && questions.length > 0 && !quizStarted && !submitted && (
-        <div className="quiz-start-card">
-          <div className="quiz-start-icon">
-            <Award style={{ width: 44, height: 44, color: 'var(--accent-primary)' }} />
-          </div>
-          <h3>Topic Assessment: {topic?.title}</h3>
-          <p>
-            You are about to start a 10-minute quiz consisting of {questions.length} items.
-            According to academic rules, a score of <strong>75% or higher is strictly required</strong> to pass and unlock subsequent topics.
-          </p>
-
-          <div className="quiz-rules-row">
-            <div className="quiz-rule-pill">
-              <Clock style={{ width: 16, height: 16, color: 'var(--accent-warning)' }} />
-              10 Minutes Timer
-            </div>
-            <div className="quiz-rule-pill">
-              <HelpCircle style={{ width: 16, height: 16, color: 'var(--accent-primary)' }} />
-              {questions.length} Questions (Max 50)
-            </div>
-            <div className="quiz-rule-pill">
-              <Award style={{ width: 16, height: 16, color: 'var(--accent-secondary)' }} />
-              75% Passing Standard
-            </div>
-          </div>
-
-          <button
-            className="btn btn-gradient btn-lg flex items-center gap-8 mt-24"
-            onClick={handleStartQuiz}
-            id="btn-begin-quiz-attempt"
-          >
-            <Play style={{ width: 18, height: 18 }} />
-            Begin Quiz Now
-          </button>
-        </div>
-      )}
-
-      {/* State B: Taking Quiz with 10-Min Timer */}
-      {quizStarted && !submitted && (
-        <div className="quiz-active-wrapper">
-          {/* Timer & Progress Bar */}
-          <div className="quiz-live-header">
-            <div className="quiz-q-indicator">
-              Question {currentQIndex + 1} of {questions.length}
-            </div>
-
-            <div className={`quiz-timer-badge ${timeLeft < 60 ? 'timer-danger' : ''}`}>
-              <Clock style={{ width: 18, height: 18 }} />
-              <span>{formatTimer(timeLeft)}</span>
-              {timeLeft < 60 && <span className="timer-warning-text">Time low!</span>}
-            </div>
-          </div>
-
-          <div className="quiz-progress-bar-bg">
-            <div
-              className="quiz-progress-bar-fill"
-              style={{ width: `${((currentQIndex + 1) / questions.length) * 100}%` }}
-            />
-          </div>
-
-          {/* Question Navigator Bubbles */}
-          <div className="quiz-bubbles-row">
-            {questions.map((_, idx) => (
-              <button
-                key={idx}
-                className={`bubble-btn ${idx === currentQIndex ? 'current' : ''} ${answers[idx] !== undefined ? 'answered' : ''}`}
-                onClick={() => setCurrentQIndex(idx)}
-              >
-                {idx + 1}
-              </button>
-            ))}
-          </div>
-
-          {/* Active Question Box */}
-          <div className="question-display-card">
-            <div className="question-number-tag">Question #{currentQIndex + 1}</div>
-            <h3 className="question-text">{questions[currentQIndex]?.question}</h3>
-
-            <div className="options-stack">
-              {questions[currentQIndex]?.options?.map((opt, optIdx) => {
-                const isSelected = answers[currentQIndex] === optIdx
-                return (
-                  <button
-                    key={optIdx}
-                    className={`option-choice-btn ${isSelected ? 'selected' : ''}`}
-                    onClick={() => selectOption(currentQIndex, optIdx)}
-                    id={`opt-${currentQIndex}-${optIdx}`}
-                  >
-                    <span className="option-letter">{String.fromCharCode(65 + optIdx)}</span>
-                    <span className="option-label">{opt}</span>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-
-          {/* Navigation Controls */}
-          <div className="quiz-controls-row">
-            <button
-              className="btn btn-outline"
-              disabled={currentQIndex === 0}
-              onClick={() => setCurrentQIndex(prev => prev - 1)}
-            >
-              <ChevronLeft style={{ width: 16, height: 16 }} />
-              Previous
-            </button>
-
-            {currentQIndex < questions.length - 1 ? (
-              <button
-                className="btn btn-outline"
-                onClick={() => setCurrentQIndex(prev => prev + 1)}
-              >
-                Next
-                <ChevronRight style={{ width: 16, height: 16 }} />
-              </button>
-            ) : (
-              <button
-                className="btn btn-gradient flex items-center gap-8"
-                onClick={() => handleSubmitQuiz(false)}
-                id="btn-submit-quiz"
-              >
-                <CheckCircle2 style={{ width: 16, height: 16 }} />
-                Submit Quiz for Grading
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* State C: Submitted / Score Result */}
-      {submitted && resultData && (
-        <div className="quiz-result-view">
-          <div className={`result-banner ${resultData.passed ? 'passed' : 'failed'}`}>
-            <div className="result-banner-icon">
-              {resultData.passed ? (
-                <CheckCircle2 style={{ width: 48, height: 48, color: '#00d4aa' }} />
-              ) : (
-                <XCircle style={{ width: 48, height: 48, color: '#ff4757' }} />
-              )}
-            </div>
-
-            <h2 className="result-banner-title">
-              {resultData.passed ? '🎉 Congratulations! You Passed!' : 'Assessment Not Passed'}
-            </h2>
-
-            <div className="result-score-highlight">
-              <span className="score-num">{resultData.score}</span>
-              <span className="score-divider">/</span>
-              <span className="score-total">{resultData.total}</span>
-              <span className="score-pct">({resultData.percentage}%)</span>
-            </div>
-
-            <p className="result-banner-text">
-              {resultData.passed ? (
-                <>
-                  Passing score of 75% met. <strong>System has unlocked subsequent topics</strong> in your Table of Contents!
-                </>
-              ) : (
-                <>
-                  You scored {resultData.percentage}%. The passing threshold is <strong>75%</strong>. You <strong>cannot proceed to the next topic</strong> until this quiz is passed. Please review the lesson notes and retake the quiz.
-                </>
-              )}
-            </p>
-
-            <div className="result-actions-row">
-              <button
-                className="btn btn-gradient flex items-center gap-8"
-                onClick={onBackToTOC}
-                id="btn-result-return-toc"
-              >
-                <ArrowLeft style={{ width: 16, height: 16 }} />
-                Return to Table of Contents
-              </button>
-
-              <button
-                className="btn btn-outline flex items-center gap-8"
-                onClick={handleStartQuiz}
-                id="btn-retake-quiz"
-              >
-                <RotateCcw style={{ width: 16, height: 16 }} />
-                Retake Assessment
-              </button>
-            </div>
-          </div>
-
-          {/* Question Review Section */}
-          <div className="quiz-review-section mt-32">
-            <h3 className="section-subheading mb-16">Review Your Answers</h3>
-            <div className="review-cards-stack">
-              {questions.map((q, idx) => {
-                const selected = resultData.answers[idx]
-                const correct = q.correct_answer !== undefined ? q.correct_answer : q.correctAnswer
-                const isCorrect = selected === correct
-
-                return (
-                  <div key={idx} className={`review-card ${isCorrect ? 'correct' : 'incorrect'}`}>
-                    <div className="review-card-header">
-                      <span className="review-q-num">Q{idx + 1}</span>
-                      <span className="review-q-title">{q.question}</span>
-                      {isCorrect ? (
-                        <span className="badge badge-green flex items-center gap-4">
-                          <CheckCircle2 style={{ width: 12, height: 12 }} /> Correct
-                        </span>
-                      ) : (
-                        <span className="badge badge-danger flex items-center gap-4">
-                          <XCircle style={{ width: 12, height: 12 }} /> Incorrect
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="review-options-list">
-                      {q.options?.map((opt, oIdx) => {
-                        const isThisSelected = selected === oIdx
-                        const isThisCorrect = correct === oIdx
-
-                        let optClass = 'review-opt'
-                        if (isThisCorrect) optClass += ' correct-answer'
-                        else if (isThisSelected && !isCorrect) optClass += ' wrong-selection'
-
-                        return (
-                          <div key={oIdx} className={optClass}>
-                            <span className="opt-marker">
-                              {isThisCorrect ? '✓' : isThisSelected ? '✗' : '·'}
-                            </span>
-                            <span>{opt}</span>
-                            {isThisCorrect && <span className="opt-badge-correct">Correct Answer</span>}
-                            {isThisSelected && !isCorrect && <span className="opt-badge-wrong">Your Answer</span>}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
         </div>
       )}
     </div>
@@ -1714,208 +1323,6 @@ function InsertTextModal({ topicId, nextOrder, onClose, onSave }) {
             id="btn-confirm-insert-text"
           >
             {saving ? 'Saving...' : 'Add Text Material'}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-/* ============================================================
-   MODAL 2: FACULTY QUIZ UPLOAD / CREATOR
-   ============================================================ */
-function FacultyQuizUploadModal({ topicId, topicTitle, onClose, onSave }) {
-  const [title, setTitle] = useState(`${topicTitle} Quiz`)
-  const [timeLimit, setTimeLimit] = useState(10)
-  const [maxItems, setMaxItems] = useState(10)
-  const [passingScore, setPassingScore] = useState(75)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-
-  // Question list
-  const [questions, setQuestions] = useState([
-    {
-      question: '',
-      options: ['', '', '', ''],
-      correctAnswer: 0,
-    },
-  ])
-
-  const addQuestion = () => {
-    if (questions.length >= 50) return
-    setQuestions(prev => [
-      ...prev,
-      { question: '', options: ['', '', '', ''], correctAnswer: 0 },
-    ])
-  }
-
-  const removeQuestion = (idx) => {
-    if (questions.length <= 1) return
-    setQuestions(prev => prev.filter((_, i) => i !== idx))
-  }
-
-  const updateQuestionText = (idx, text) => {
-    setQuestions(prev => prev.map((q, i) => (i === idx ? { ...q, question: text } : q)))
-  }
-
-  const updateOptionText = (qIdx, optIdx, text) => {
-    setQuestions(prev => prev.map((q, i) => (
-      i === qIdx ? { ...q, options: q.options.map((o, j) => (j === optIdx ? text : o)) } : q
-    )))
-  }
-
-  const updateCorrectAnswer = (qIdx, optIdx) => {
-    setQuestions(prev => prev.map((q, i) => (i === qIdx ? { ...q, correctAnswer: optIdx } : q)))
-  }
-
-  const handleSave = async () => {
-    if (!title.trim()) {
-      setError('Please enter a quiz title.')
-      return
-    }
-    // Validate that questions are filled
-    const validQuestions = questions.filter(q => q.question.trim() && q.options.every(o => o.trim()))
-    if (validQuestions.length === 0) {
-      setError('Add at least one complete question (prompt and all four options).')
-      return
-    }
-    if (validQuestions.length < questions.length) {
-      setError(`${questions.length - validQuestions.length} incomplete question(s) found. Fill them in or remove them.`)
-      return
-    }
-
-    setError('')
-    setSaving(true)
-    try {
-      await onSave({
-        title: title.trim(),
-        timeLimit: Math.min(Math.max(Number(timeLimit) || 10, 1), 10),
-        maxItems: Math.min(Number(maxItems) || 50, 50),
-        passingScore: Math.min(Math.max(Number(passingScore) || 75, 50), 100),
-        questions: validQuestions,
-      })
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal modal-lg" onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
-          <h2 className="modal-title">Faculty Quiz Upload (10 Mins · Max 50 Items)</h2>
-          <button className="btn btn-icon btn-outline" onClick={onClose}><X /></button>
-        </div>
-
-        <div className="modal-body" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
-          <div className="grid-3 mb-20">
-            <div className="form-group">
-              <label className="form-label">Quiz Title</label>
-              <input
-                className="form-input"
-                value={title}
-                onChange={e => setTitle(e.target.value)}
-                placeholder="e.g. Topic 1 Comprehensive Test"
-              />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Time Limit (Minutes)</label>
-              <input
-                type="number"
-                max={10}
-                min={1}
-                className="form-input"
-                value={timeLimit}
-                onChange={e => setTimeLimit(e.target.value)}
-              />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Passing Score (%)</label>
-              <input
-                type="number"
-                min={50}
-                max={100}
-                className="form-input"
-                value={passingScore}
-                onChange={e => setPassingScore(e.target.value)}
-              />
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between mb-16">
-            <h3 className="section-subheading">Questions ({questions.length} / max 50)</h3>
-            <button
-              type="button"
-              className="btn btn-outline btn-sm flex items-center gap-6"
-              onClick={addQuestion}
-              disabled={questions.length >= 50}
-            >
-              <Plus style={{ width: 14, height: 14 }} /> Add Question
-            </button>
-          </div>
-
-          <div className="flex flex-col gap-20">
-            {questions.map((q, qIdx) => (
-              <div key={qIdx} className="faculty-q-editor-card">
-                <div className="flex items-center justify-between mb-12">
-                  <span className="badge badge-purple">Question #{qIdx + 1}</span>
-                  {questions.length > 1 && (
-                    <button
-                      type="button"
-                      className="btn btn-icon btn-outline btn-sm"
-                      onClick={() => removeQuestion(qIdx)}
-                      title="Remove Question"
-                    >
-                      <Trash2 style={{ width: 14, height: 14, color: 'var(--accent-danger)' }} />
-                    </button>
-                  )}
-                </div>
-
-                <div className="form-group mb-12">
-                  <input
-                    className="form-input"
-                    placeholder="Enter question prompt..."
-                    value={q.question}
-                    onChange={e => updateQuestionText(qIdx, e.target.value)}
-                  />
-                </div>
-
-                <div className="options-grid-editor">
-                  {q.options.map((opt, optIdx) => (
-                    <div key={optIdx} className="flex items-center gap-8">
-                      <input
-                        type="radio"
-                        name={`correct-${qIdx}`}
-                        checked={q.correctAnswer === optIdx}
-                        onChange={() => updateCorrectAnswer(qIdx, optIdx)}
-                        title="Mark as correct answer"
-                      />
-                      <input
-                        className="form-input"
-                        placeholder={`Option ${String.fromCharCode(65 + optIdx)}`}
-                        value={opt}
-                        onChange={e => updateOptionText(qIdx, optIdx, e.target.value)}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="modal-footer">
-          {error && (
-            <span style={{ color: 'var(--accent-danger)', fontSize: 13, marginRight: 'auto' }}>{error}</span>
-          )}
-          <button className="btn btn-outline" onClick={onClose}>Cancel</button>
-          <button
-            className="btn btn-gradient"
-            onClick={handleSave}
-            disabled={saving}
-            id="btn-upload-quiz-db"
-          >
-            {saving ? 'Uploading to Database...' : 'Upload Quiz to Database'}
           </button>
         </div>
       </div>
