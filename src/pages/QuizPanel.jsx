@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import {
   ArrowLeft,
+  ArrowRight,
   Award,
   CheckCircle2,
   ChevronLeft,
@@ -33,11 +34,17 @@ export function isValidGformUrl(value) {
   }
 }
 
-// Google only allows embedding the /viewform page with ?embedded=true
+// Convert any standard Google Form URL (/viewform, /edit, /formResponse) to an embeddable /viewform?embedded=true URL
 function toGformEmbedUrl(value) {
   try {
-    const u = new URL(value)
-    if (u.hostname !== 'docs.google.com' || !u.pathname.includes('/viewform')) return null
+    const u = new URL((value || '').trim())
+    if (u.hostname !== 'docs.google.com' && u.hostname !== 'forms.google.com') return null
+    if (!u.pathname.includes('/forms/')) return null
+    u.hostname = 'docs.google.com'
+    u.pathname = u.pathname.replace(/\/(edit|formResponse|prefill)\/?$/, '/viewform')
+    if (!u.pathname.endsWith('/viewform')) {
+      u.pathname = u.pathname.replace(/\/+$/, '') + '/viewform'
+    }
     u.searchParams.set('embedded', 'true')
     return u.toString()
   } catch {
@@ -63,6 +70,8 @@ export default function QuizSection({
   onCompleteExternal,
   onDeleteQuiz,
   onBackToTOC,
+  nextTopic,
+  onNextTopic,
 }) {
   const [selectedId, setSelectedId] = useState(null)
   const active = quizzes.find(q => q.id === selectedId) || quizzes[0] || null
@@ -89,7 +98,7 @@ export default function QuizSection({
           <h2 className="section-title">{active ? active.title : `${topic?.title || 'Topic'} Quiz`}</h2>
           <p className="section-subtitle">
             {!active && 'Topic assessment.'}
-            {active && isGform && 'Google Forms quiz · opens the form your instructor shared.'}
+            {active && isGform && 'Google Forms quiz · complete the form below or in a new tab, then mark it done.'}
             {active && !isGform && (
               <>
                 Time Limit: <strong>{active.time_limit_minutes || 10} min</strong> · Items: <strong>{questions.length}</strong> · Passing Score: <strong>{active.passing_score || 75}%</strong>
@@ -164,6 +173,9 @@ export default function QuizSection({
           completed={myResults.some(r => r.passed)}
           completedAt={myResults.find(r => r.passed)?.submitted_at}
           onComplete={() => onCompleteExternal(active)}
+          onBackToTOC={onBackToTOC}
+          nextTopic={nextTopic}
+          onNextTopic={onNextTopic}
         />
       )}
 
@@ -178,6 +190,8 @@ export default function QuizSection({
           myResults={myResults}
           onSubmitResult={onSubmitResult}
           onBackToTOC={onBackToTOC}
+          nextTopic={nextTopic}
+          onNextTopic={onNextTopic}
         />
       )}
     </div>
@@ -187,15 +201,16 @@ export default function QuizSection({
 /* ============================================================
    Google Forms quiz view
    ============================================================ */
-function GformQuiz({ quiz, isFaculty, completed, completedAt, onComplete }) {
+function GformQuiz({ quiz, isFaculty, completed, completedAt, onComplete, onBackToTOC, nextTopic, onNextTopic }) {
   const [saving, setSaving] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const embedUrl = toGformEmbedUrl(quiz.external_url)
 
   const handleComplete = async () => {
-    if (!window.confirm('Confirm that you have submitted the Google Form?')) return
     setSaving(true)
     await onComplete()
     setSaving(false)
+    setConfirming(false)
   }
 
   return (
@@ -207,8 +222,10 @@ function GformQuiz({ quiz, isFaculty, completed, completedAt, onComplete }) {
         <h3>{quiz.title}</h3>
         <p>
           {isFaculty
-            ? 'Students will open this Google Form from the Quiz tab and confirm once they have submitted it. Scores stay in your Google Forms responses.'
-            : 'Complete the Google Form below, then come back and confirm so the next topic unlocks.'}
+            ? 'Students can answer this Google Form directly below (for full docs.google.com links) or open it in a new tab, then mark it completed to unlock the next topic.'
+            : embedUrl
+              ? 'Fill out and submit the embedded Google Form below (or open it in a new tab), then click "Mark as Completed" to unlock the next topic.'
+              : 'Open the Google Form in a new tab, submit your responses, then return here and click "Mark as Completed" to unlock the next topic.'}
         </p>
         <div className="flex items-center gap-12" style={{ justifyContent: 'center', flexWrap: 'wrap' }}>
           <a
@@ -218,19 +235,62 @@ function GformQuiz({ quiz, isFaculty, completed, completedAt, onComplete }) {
             className="btn btn-gradient flex items-center gap-8"
           >
             <ExternalLink style={{ width: 16, height: 16 }} />
-            Open Google Form
+            Open Google Form in New Tab
           </a>
-          {!isFaculty && !completed && (
-            <button className="btn btn-outline flex items-center gap-8" onClick={handleComplete} disabled={saving}>
+
+          {!isFaculty && !completed && !confirming && (
+            <button
+              className="btn btn-outline flex items-center gap-8"
+              onClick={() => setConfirming(true)}
+              id="btn-mark-gform-done"
+            >
               <CheckCircle2 style={{ width: 16, height: 16 }} />
-              {saving ? 'Saving...' : "I've submitted the form"}
+              Mark as Completed
             </button>
           )}
+
+          {!isFaculty && !completed && confirming && (
+            <div className="flex items-center gap-8" style={{ flexWrap: 'wrap', justifyContent: 'center' }}>
+              <button
+                className="btn btn-gradient flex items-center gap-8"
+                onClick={handleComplete}
+                disabled={saving}
+                id="btn-confirm-gform-done"
+              >
+                <CheckCircle2 style={{ width: 16, height: 16 }} />
+                {saving ? 'Saving...' : 'Confirm — I submitted the Google Form'}
+              </button>
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={() => setConfirming(false)}
+                disabled={saving}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
+
         {!isFaculty && completed && (
-          <div className="badge badge-green mt-24" style={{ display: 'inline-flex', gap: 6 }}>
-            <CheckCircle2 style={{ width: 14, height: 14 }} />
-            Completed{completedAt ? ` on ${new Date(completedAt).toLocaleDateString()}` : ''}
+          <div style={{ marginTop: 20 }}>
+            <div className="badge badge-green" style={{ display: 'inline-flex', gap: 6, marginBottom: 16 }}>
+              <CheckCircle2 style={{ width: 14, height: 14 }} />
+              Completed{completedAt ? ` on ${new Date(completedAt).toLocaleDateString()}` : ''} · Next topic unlocked
+            </div>
+            <div className="flex items-center gap-12" style={{ justifyContent: 'center', flexWrap: 'wrap' }}>
+              {nextTopic && onNextTopic && (
+                <button className="btn btn-gradient flex items-center gap-8" onClick={onNextTopic} id="btn-gform-next-topic">
+                  Proceed to Next Topic: {nextTopic.title.length > 28 ? `${nextTopic.title.slice(0, 28)}…` : nextTopic.title}
+                  <ArrowRight style={{ width: 16, height: 16 }} />
+                </button>
+              )}
+              {onBackToTOC && (
+                <button className="btn btn-outline flex items-center gap-8" onClick={onBackToTOC}>
+                  <ArrowLeft style={{ width: 16, height: 16 }} />
+                  Return to Table of Contents
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -285,7 +345,7 @@ function QuizPreview({ quiz, questions }) {
 /* ============================================================
    Student quiz runner (timer, navigation, server-verified score)
    ============================================================ */
-function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackToTOC }) {
+function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackToTOC, nextTopic, onNextTopic }) {
   const limitSeconds = (quiz.time_limit_minutes || 10) * 60
   const [quizStarted, setQuizStarted] = useState(false)
   const [currentQIndex, setCurrentQIndex] = useState(0)
@@ -293,6 +353,7 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
   const [timeLeft, setTimeLeft] = useState(limitSeconds)
   const [submitted, setSubmitted] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [confirmUnanswered, setConfirmUnanswered] = useState(false)
   const [resultData, setResultData] = useState(null)
   const answersRef = useRef({})
   const endAtRef = useRef(0)
@@ -313,6 +374,7 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
     setCurrentQIndex(0)
     setTimeLeft(limitSeconds)
     setSubmitted(false)
+    setConfirmUnanswered(false)
     setResultData(null)
     setQuizStarted(true)
   }
@@ -321,10 +383,15 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
     if (submittedRef.current) return
     submittedRef.current = true
     setSubmitting(true)
+    setConfirmUnanswered(false)
 
     const given = answersRef.current || {}
+    const payload = { ...given }
     let score = 0
     questions.forEach((q, idx) => {
+      if (given[idx] !== undefined && q.id) {
+        payload[q.id] = given[idx]
+      }
       if (given[idx] === correctOf(q)) score++
     })
     const total = questions.length
@@ -332,7 +399,7 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
     const passed = percentage >= passingThreshold
 
     // The server re-grades the attempt; show the official score when available
-    const res = await onSubmitResult(quiz.id, score, total, percentage, passed, given)
+    const res = await onSubmitResult(quiz.id, score, total, percentage, passed, payload)
     const official = res?.data
 
     setResultData({
@@ -362,9 +429,47 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
     return () => clearInterval(id)
   }, [quizStarted, submitted])
 
+  // Keyboard shortcuts while taking the quiz: A-D / 1-4 to pick option, Left/Right arrows to navigate
+  useEffect(() => {
+    if (!quizStarted || submitted) return
+    const onKeyDown = (e) => {
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName)) return
+      const q = questions[currentQIndex]
+      const optCount = q?.options?.length || 0
+      const key = e.key.toUpperCase()
+      if (['1', '2', '3', '4'].includes(key)) {
+        const idx = Number(key) - 1
+        if (idx < optCount) {
+          e.preventDefault()
+          setAnswers(prev => ({ ...prev, [currentQIndex]: idx }))
+        }
+      } else if (['A', 'B', 'C', 'D'].includes(key)) {
+        const idx = key.charCodeAt(0) - 65
+        if (idx < optCount) {
+          e.preventDefault()
+          setAnswers(prev => ({ ...prev, [currentQIndex]: idx }))
+        }
+      } else if (e.key === 'ArrowRight' && currentQIndex < questions.length - 1) {
+        e.preventDefault()
+        setCurrentQIndex(i => i + 1)
+      } else if (e.key === 'ArrowLeft' && currentQIndex > 0) {
+        e.preventDefault()
+        setCurrentQIndex(i => i - 1)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [quizStarted, submitted, currentQIndex, questions])
+
+  const answeredCount = Object.keys(answers).length
+  const unansweredCount = questions.length - answeredCount
+  const firstUnansweredIndex = questions.findIndex((_, idx) => answers[idx] === undefined)
+
   const handleManualSubmit = () => {
-    const unanswered = questions.length - Object.keys(answers).length
-    if (unanswered > 0 && !window.confirm(`You still have ${unanswered} unanswered question(s). Submit anyway?`)) return
+    if (unansweredCount > 0 && !confirmUnanswered) {
+      setConfirmUnanswered(true)
+      return
+    }
     submit(false)
   }
 
@@ -406,15 +511,27 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
           </p>
         )}
 
-        <button
-          className="btn btn-gradient btn-lg flex items-center gap-8 mt-24"
-          onClick={handleStart}
-          disabled={questions.length === 0}
-          id="btn-begin-quiz-attempt"
-        >
-          <Play style={{ width: 18, height: 18 }} />
-          {myResults.length > 0 ? 'Retake Quiz' : 'Begin Quiz Now'}
-        </button>
+        <div className="flex items-center gap-12 mt-24" style={{ justifyContent: 'center', flexWrap: 'wrap' }}>
+          <button
+            className="btn btn-gradient btn-lg flex items-center gap-8"
+            onClick={handleStart}
+            disabled={questions.length === 0}
+            id="btn-begin-quiz-attempt"
+          >
+            <Play style={{ width: 18, height: 18 }} />
+            {myResults.length > 0 ? 'Retake Quiz' : 'Begin Quiz Now'}
+          </button>
+          {hasPassed && nextTopic && onNextTopic && (
+            <button
+              className="btn btn-outline btn-lg flex items-center gap-8"
+              onClick={onNextTopic}
+              id="btn-start-card-next-topic"
+            >
+              Proceed to Next Topic
+              <ArrowRight style={{ width: 18, height: 18 }} />
+            </button>
+          )}
+        </div>
       </div>
     )
   }
@@ -424,8 +541,13 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
     const q = questions[currentQIndex]
     return (
       <div className="quiz-active-wrapper">
-        <div className="quiz-live-header">
-          <div className="quiz-q-indicator">Question {currentQIndex + 1} of {questions.length}</div>
+        <div className="quiz-live-header" style={{ flexWrap: 'wrap', gap: 12 }}>
+          <div>
+            <div className="quiz-q-indicator">Question {currentQIndex + 1} of {questions.length}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              Answered {answeredCount} of {questions.length} · Tip: Use keys A–D or 1–4 and ←/→ arrows
+            </div>
+          </div>
           <div className={`quiz-timer-badge ${timeLeft < 60 ? 'timer-danger' : ''}`}>
             <Clock style={{ width: 18, height: 18 }} />
             <span>{formatTimer(timeLeft)}</span>
@@ -436,7 +558,7 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
         <div className="quiz-progress-bar-bg">
           <div
             className="quiz-progress-bar-fill"
-            style={{ width: `${((currentQIndex + 1) / questions.length) * 100}%` }}
+            style={{ width: `${(answeredCount / Math.max(1, questions.length)) * 100}%` }}
           />
         </div>
 
@@ -445,7 +567,11 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
             <button
               key={idx}
               className={`bubble-btn ${idx === currentQIndex ? 'current' : ''} ${answers[idx] !== undefined ? 'answered' : ''}`}
-              onClick={() => setCurrentQIndex(idx)}
+              onClick={() => {
+                setCurrentQIndex(idx)
+                setConfirmUnanswered(false)
+              }}
+              title={answers[idx] !== undefined ? `Question ${idx + 1} (Answered)` : `Question ${idx + 1} (Unanswered)`}
             >
               {idx + 1}
             </button>
@@ -453,14 +579,35 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
         </div>
 
         <div className="question-display-card">
-          <div className="question-number-tag">Question #{currentQIndex + 1}</div>
+          <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
+            <div className="question-number-tag" style={{ marginBottom: 0 }}>Question #{currentQIndex + 1}</div>
+            {answers[currentQIndex] !== undefined && (
+              <button
+                type="button"
+                className="link-btn"
+                style={{ fontSize: 12 }}
+                onClick={() =>
+                  setAnswers(prev => {
+                    const next = { ...prev }
+                    delete next[currentQIndex]
+                    return next
+                  })
+                }
+              >
+                Clear choice
+              </button>
+            )}
+          </div>
           <h3 className="question-text">{q?.question}</h3>
           <div className="options-stack">
             {q?.options?.map((opt, optIdx) => (
               <button
                 key={optIdx}
                 className={`option-choice-btn ${answers[currentQIndex] === optIdx ? 'selected' : ''}`}
-                onClick={() => setAnswers(prev => ({ ...prev, [currentQIndex]: optIdx }))}
+                onClick={() => {
+                  setAnswers(prev => ({ ...prev, [currentQIndex]: optIdx }))
+                  setConfirmUnanswered(false)
+                }}
                 id={`opt-${currentQIndex}-${optIdx}`}
               >
                 <span className="option-letter">{String.fromCharCode(65 + optIdx)}</span>
@@ -469,6 +616,48 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
             ))}
           </div>
         </div>
+
+        {confirmUnanswered && unansweredCount > 0 && (
+          <div
+            className="card mb-16"
+            style={{
+              padding: '14px 18px',
+              borderColor: 'rgba(255, 177, 66, 0.45)',
+              background: 'rgba(255, 177, 66, 0.08)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: 12,
+            }}
+          >
+            <span style={{ fontSize: 13 }}>
+              You still have <strong>{unansweredCount}</strong> unanswered question{unansweredCount === 1 ? '' : 's'}.
+            </span>
+            <div className="flex items-center gap-8">
+              {firstUnansweredIndex !== -1 && (
+                <button
+                  type="button"
+                  className="btn btn-outline btn-sm"
+                  onClick={() => {
+                    setCurrentQIndex(firstUnansweredIndex)
+                    setConfirmUnanswered(false)
+                  }}
+                >
+                  Jump to Q{firstUnansweredIndex + 1}
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-gradient btn-sm"
+                onClick={() => submit(false)}
+                disabled={submitting}
+              >
+                Submit Anyway
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="quiz-controls-row">
           <button
@@ -480,22 +669,34 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
             Previous
           </button>
 
-          {currentQIndex < questions.length - 1 ? (
-            <button className="btn btn-outline" onClick={() => setCurrentQIndex(i => i + 1)}>
-              Next
-              <ChevronRight style={{ width: 16, height: 16 }} />
-            </button>
-          ) : (
-            <button
-              className="btn btn-gradient flex items-center gap-8"
-              onClick={handleManualSubmit}
-              disabled={submitting}
-              id="btn-submit-quiz"
-            >
-              <CheckCircle2 style={{ width: 16, height: 16 }} />
-              {submitting ? 'Submitting...' : 'Submit Quiz for Grading'}
-            </button>
-          )}
+          <div className="flex items-center gap-8">
+            {unansweredCount > 0 && firstUnansweredIndex !== -1 && firstUnansweredIndex !== currentQIndex && (
+              <button
+                type="button"
+                className="btn btn-outline btn-sm"
+                onClick={() => setCurrentQIndex(firstUnansweredIndex)}
+              >
+                Next Unanswered (Q{firstUnansweredIndex + 1})
+              </button>
+            )}
+
+            {currentQIndex < questions.length - 1 ? (
+              <button className="btn btn-outline" onClick={() => setCurrentQIndex(i => i + 1)}>
+                Next
+                <ChevronRight style={{ width: 16, height: 16 }} />
+              </button>
+            ) : (
+              <button
+                className="btn btn-gradient flex items-center gap-8"
+                onClick={handleManualSubmit}
+                disabled={submitting}
+                id="btn-submit-quiz"
+              >
+                <CheckCircle2 style={{ width: 16, height: 16 }} />
+                {submitting ? 'Submitting...' : 'Submit Quiz for Grading'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     )
@@ -528,7 +729,21 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
             : <>You scored {resultData.percentage}%. You need <strong>{passingThreshold}%</strong> to proceed. Review the lesson and try again.</>}
         </p>
         <div className="result-actions-row">
-          <button className="btn btn-gradient flex items-center gap-8" onClick={onBackToTOC} id="btn-result-return-toc">
+          {resultData.passed && nextTopic && onNextTopic && (
+            <button
+              className="btn btn-gradient flex items-center gap-8"
+              onClick={onNextTopic}
+              id="btn-result-next-topic"
+            >
+              Proceed to Next Topic: {nextTopic.title.length > 26 ? `${nextTopic.title.slice(0, 26)}…` : nextTopic.title}
+              <ArrowRight style={{ width: 16, height: 16 }} />
+            </button>
+          )}
+          <button
+            className={`btn ${resultData.passed && nextTopic && onNextTopic ? 'btn-outline' : 'btn-gradient'} flex items-center gap-8`}
+            onClick={onBackToTOC}
+            id="btn-result-return-toc"
+          >
             <ArrowLeft style={{ width: 16, height: 16 }} />
             Return to Table of Contents
           </button>

@@ -39,16 +39,20 @@ export default function ScoresPage() {
 
   // Normalize data for display and exports
   const normalizedRows = useMemo(() => {
-    const items = (rawData || []).map(r => ({
-      id: r.id,
-      studentName: r.users_profile?.full_name || profile?.full_name || user?.email?.split('@')[0] || 'Student User',
-      quizTitle: r.quizzes?.title || 'Topic Assessment Quiz',
-      score: r.score,
-      total: r.total_items || 10,
-      percentage: r.percentage,
-      passed: r.passed,
-      submittedAt: r.submitted_at || new Date().toISOString(),
-    }))
+    const items = (rawData || []).map(r => {
+      const isExternal = Boolean(r.answers?.external || r.quizzes?.quiz_type === 'gform')
+      return {
+        id: r.id,
+        studentName: r.users_profile?.full_name || profile?.full_name || user?.email?.split('@')[0] || 'Student User',
+        quizTitle: r.quizzes?.title || 'Topic Assessment Quiz',
+        score: r.score,
+        total: r.total_items || 10,
+        percentage: r.percentage,
+        passed: r.passed,
+        isExternal,
+        submittedAt: r.submitted_at || new Date().toISOString(),
+      }
+    })
 
     // Filtering
     let filtered = items.filter(row => {
@@ -119,12 +123,13 @@ export default function ScoresPage() {
     printScores(normalizedRows, `${isFaculty ? 'All Students' : 'My'} Quiz Scores Summary`)
   }
 
-  // Overall statistics
+  // Overall statistics (exclude external Google Form completion markers from numeric % average)
   const totalSubmissions = normalizedRows.length
   const passedCount = normalizedRows.filter(r => r.passed).length
   const passRate = totalSubmissions > 0 ? Math.round((passedCount / totalSubmissions) * 100) : 0
-  const avgScore = totalSubmissions > 0
-    ? Math.round(normalizedRows.reduce((acc, r) => acc + r.percentage, 0) / totalSubmissions)
+  const gradedRows = normalizedRows.filter(r => !r.isExternal)
+  const avgScore = gradedRows.length > 0
+    ? Math.round(gradedRows.reduce((acc, r) => acc + (Number(r.percentage) || 0), 0) / gradedRows.length)
     : 0
 
   return (
@@ -321,17 +326,27 @@ export default function ScoresPage() {
                     </td>
                     <td>{row.quizTitle}</td>
                     <td style={{ fontFamily: 'var(--font-mono)' }}>
-                      <strong>{row.score}</strong> / {row.total}
+                      {row.isExternal ? (
+                        <span className="badge badge-purple">Google Form</span>
+                      ) : (
+                        <>
+                          <strong>{row.score}</strong> / {row.total}
+                        </>
+                      )}
                     </td>
                     <td>
-                      <span className={`badge ${row.passed ? 'badge-green' : 'badge-danger'}`}>
-                        {row.percentage}%
-                      </span>
+                      {row.isExternal ? (
+                        <span className="badge badge-green">Submitted</span>
+                      ) : (
+                        <span className={`badge ${row.passed ? 'badge-green' : 'badge-danger'}`}>
+                          {row.percentage}%
+                        </span>
+                      )}
                     </td>
                     <td>
                       {row.passed ? (
                         <span className="status-pill passed">
-                          <CheckCircle2 style={{ width: 14, height: 14 }} /> PASSED
+                          <CheckCircle2 style={{ width: 14, height: 14 }} /> {row.isExternal ? 'COMPLETED' : 'PASSED'}
                         </span>
                       ) : (
                         <span className="status-pill failed">

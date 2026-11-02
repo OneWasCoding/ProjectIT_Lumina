@@ -21,7 +21,7 @@ const formatDue = (iso) =>
 export default function DashboardPage({ onNavigate }) {
   const {
     user, profile, selectedSubject,
-    topics, fetchTopics,
+    topics, fetchTopics, quizzes, fetchSubjectQuizzes,
     quizResults, fetchMyResults, allResults, fetchAllResults,
     announcements, fetchAnnouncements,
     assignments, fetchAssignments,
@@ -42,6 +42,12 @@ export default function DashboardPage({ onNavigate }) {
     else fetchMyResults()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subjectId, isFaculty])
+
+  // Know which topics actually have a quiz so progress is only measured against those
+  useEffect(() => {
+    if (topics.length && topics[0].subject_id === subjectId) fetchSubjectQuizzes(topics.map(t => t.id))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topics, subjectId])
 
   const subjectAnnouncements = useMemo(
     () =>
@@ -71,6 +77,7 @@ export default function DashboardPage({ onNavigate }) {
     : <StudentDashboard
         user={user}
         topics={topics}
+        quizzes={quizzes}
         assignments={subjectAssignments}
         submissions={subjectSubmissions}
         announcements={subjectAnnouncements}
@@ -130,12 +137,18 @@ function AnnouncementPreview({ announcements, onNavigate }) {
   )
 }
 
-function StudentDashboard({ user, topics, assignments, submissions, announcements, results, onNavigate }) {
+function StudentDashboard({ user, topics, quizzes = [], assignments, submissions, announcements, results, onNavigate }) {
   const passedTopics = new Set(results.filter(r => r.passed).map(r => r.quizzes?.topic_id))
-  const progress = topics.length ? Math.round((passedTopics.size / topics.length) * 100) : 0
-  const avg = results.length
-    ? Math.round(results.reduce((a, r) => a + (Number(r.percentage) || 0), 0) / results.length)
-    : 0
+  // Only topics that have a quiz count towards progress (and can be "continued")
+  const quizTopics = topics.filter(t => quizzes.some(q => q.topic_id === t.id))
+  const doneCount = quizTopics.filter(t => passedTopics.has(t.id)).length
+  const progress = quizTopics.length ? Math.round((doneCount / quizTopics.length) * 100) : 0
+  const avg = (() => {
+    const graded = results.filter(r => !r.answers?.external)
+    return graded.length
+      ? Math.round(graded.reduce((a, r) => a + (Number(r.percentage) || 0), 0) / graded.length)
+      : 0
+  })()
 
   const mine = submissions.filter(s => s.student_id === user?.id)
   const subFor = (id) => mine.find(s => s.assignment_id === id)
@@ -143,7 +156,7 @@ function StudentDashboard({ user, topics, assignments, submissions, announcement
     .filter(a => !subFor(a.id))
     .sort((a, b) => (a.due_date ? new Date(a.due_date) : Infinity) - (b.due_date ? new Date(b.due_date) : Infinity))
 
-  const nextTopic = topics.find(t => !passedTopics.has(t.id))
+  const nextTopic = quizTopics.find(t => !passedTopics.has(t.id))
 
   return (
     <>
@@ -161,7 +174,9 @@ function StudentDashboard({ user, topics, assignments, submissions, announcement
             <p className="section-subtitle">
               {topics.length === 0
                 ? 'No topics have been published for this subject yet.'
-                : `${passedTopics.size} of ${topics.length} topics passed`}
+                : quizTopics.length === 0
+                  ? `${topics.length} topic(s) published · no topic quizzes required yet`
+                  : `${doneCount} of ${quizTopics.length} topic quiz${quizTopics.length === 1 ? '' : 'zes'} passed`}
             </p>
           </div>
           {nextTopic && (
@@ -169,8 +184,8 @@ function StudentDashboard({ user, topics, assignments, submissions, announcement
               <BookOpen /> Continue: {nextTopic.title.length > 36 ? `${nextTopic.title.slice(0, 36)}…` : nextTopic.title}
             </button>
           )}
-          {topics.length > 0 && !nextTopic && (
-            <span className="badge badge-green"><CheckCircle2 style={{ width: 12, height: 12, marginRight: 4 }} /> All topics passed</span>
+          {quizTopics.length > 0 && !nextTopic && (
+            <span className="badge badge-green"><CheckCircle2 style={{ width: 12, height: 12, marginRight: 4 }} /> All topic quizzes passed</span>
           )}
         </div>
         <div className="quiz-progress"><div className="quiz-progress-fill" style={{ width: `${progress}%` }} /></div>
@@ -209,8 +224,9 @@ function StudentDashboard({ user, topics, assignments, submissions, announcement
 function FacultyDashboard({ topics, assignments, submissions, announcements, results, onNavigate }) {
   const toGrade = submissions.filter(s => s.status !== 'graded')
   const studentCount = new Set(submissions.map(s => s.student_id).concat(results.map(r => r.student_id))).size
-  const classAvg = results.length
-    ? Math.round(results.reduce((a, r) => a + (Number(r.percentage) || 0), 0) / results.length)
+  const gradedResults = results.filter(r => !r.answers?.external)
+  const classAvg = gradedResults.length
+    ? Math.round(gradedResults.reduce((a, r) => a + (Number(r.percentage) || 0), 0) / gradedResults.length)
     : 0
   const titleOf = (id) => assignments.find(a => a.id === id)?.title || 'Assignment'
 
