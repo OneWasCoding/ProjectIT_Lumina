@@ -165,6 +165,72 @@ async function readZipEntries(buffer) {
   return entries
 }
 
+/**
+ * Extract text from an uploaded file (PDF or PowerPoint) for AI quiz generation.
+ * Returns { kind, text, slides }:
+ *   kind   - 'pdf' | 'pptx' | 'ppt' | null
+ *   text   - flattened plain text extracted from the file
+ *   slides - for pptx: the extracted slide objects; for pdf: a single synthetic slide
+ */
+export async function extractTextFromFile(file) {
+  if (!file) return { kind: null, text: '', slides: [] }
+  const kind = detectPresentationKind(file)
+  if (!kind) return { kind: null, text: '', slides: [] }
+
+  if (kind === 'pptx') {
+    const slides = await extractPptxSlides(file)
+    const text = slides
+      .map((s, i) => `Slide ${i + 1} — ${s.title || ''}\n${(s.bullets || []).join('\n')}`)
+      .join('\n\n')
+    return { kind, text, slides }
+  }
+
+  if (kind === 'pdf') {
+    const text = await extractPdfText(file)
+    const slides = text.trim()
+      ? [
+          {
+            title: file.name.replace(/\.[^.]+$/, '') || 'Uploaded PDF',
+            bullets: text.split(/\n+/).filter(Boolean).slice(0, 40),
+            color: '#7c5cfc',
+          },
+        ]
+      : []
+    return { kind, text, slides }
+  }
+
+  // .ppt (binary PowerPoint) is not text-extractable client-side
+  return { kind, text: '', slides: [] }
+}
+
+/**
+ * Extract text from a .pdf file using pdf.js (browser build).
+ * Falls back gracefully if pdf.js or its worker cannot be loaded.
+ */
+async function extractPdfText(file) {
+  try {
+    const pdfjsLib = await import('pdfjs-dist')
+    if (pdfjsLib.GlobalWorkerOptions) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version || '4.8.69'}/pdf.worker.min.js`
+    }
+    const arrayBuffer = await file.arrayBuffer()
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+    let text = ''
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i)
+      const content = await page.getTextContent()
+      const pageText = content.items.map(item => item.str || '').join(' ')
+      text += `\n--- Page ${i} ---\n${pageText}`
+    }
+    pdf.destroy()
+    return text.trim()
+  } catch (err) {
+    console.warn('PDF text extraction failed:', err)
+    return ''
+  }
+}
+
 async function extractZipEntryBytes(buffer, entry) {
   const view = new DataView(buffer)
   const offset = entry.localHeaderOffset

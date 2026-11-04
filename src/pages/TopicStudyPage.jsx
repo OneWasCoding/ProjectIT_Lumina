@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { formatFileSize } from '../lib/presentationParser.js'
 import QuizSection, { FacultyQuizUploadModal } from './QuizPanel.jsx'
+import AiQuizGenerator from '../components/AiQuizGenerator.jsx'
 import {
   ArrowLeft,
   BookOpen,
@@ -48,6 +49,7 @@ export default function TopicStudyPage({ onBackToTOC }) {
     fetchQuizzes,
     addQuiz,
     deleteQuiz,
+    deleteTopicQuizzes,
     completeExternalQuiz,
     submitQuizResult,
     quizResults,
@@ -56,10 +58,14 @@ export default function TopicStudyPage({ onBackToTOC }) {
   } = useApp()
 
   const [activeTab, setActiveTab] = useState('text') // 'text' | 'presentation' | 'insights' | 'summary' | 'quiz'
+  const [quizStartSignal, setQuizStartSignal] = useState(0)
   const isFaculty = profile?.role === 'faculty'
+  const [showAiQuizModal, setShowAiQuizModal] = useState(false)
+  const [aiQuizDeck, setAiQuizDeck] = useState(null) // { extractedSlides[], title, ... }
 
   // Load content, quizzes & student results for this topic
   useEffect(() => {
+    setQuizStartSignal(0)
     if (currentTopic?.id) {
       fetchTopicContent(currentTopic.id)
       fetchQuizzes(currentTopic.id)
@@ -68,7 +74,7 @@ export default function TopicStudyPage({ onBackToTOC }) {
   }, [currentTopic, isFaculty, fetchTopicContent, fetchQuizzes, fetchMyResults])
 
   // Content filtered by this topic and type
-  const topicItems = topicContent.filter(c => c.topic_id === currentTopic?.id)
+  const topicItems = topicContent.filter(c => Number(c.topic_id) === Number(currentTopic?.id))
   const textContents = topicItems.filter(c => c.content_type === 'text')
   const presentationContents = topicItems.filter(c => c.content_type === 'presentation')
   const insightContents = topicItems.filter(
@@ -76,11 +82,16 @@ export default function TopicStudyPage({ onBackToTOC }) {
   )
 
   // Find results for quizzes in this topic
-  const topicQuizzes = quizzes.filter(q => q.topic_id === currentTopic?.id)
+  const topicQuizzes = quizzes.filter(q => Number(q.topic_id) === Number(currentTopic?.id))
   const primaryQuiz = topicQuizzes[0] || null
   const topicResults = quizResults.filter(r => topicQuizzes.some(q => q.id === r.quiz_id))
   const hasPassedTopic = topicResults.some(r => r.passed)
   const latestResult = topicResults[0]
+
+  const handleLaunchQuiz = () => {
+    setActiveTab('quiz')
+    setQuizStartSignal(s => s + 1)
+  }
 
   // Next topic in the same subject
   const sortedSubjectTopics = [...(topics || [])]
@@ -151,7 +162,7 @@ export default function TopicStudyPage({ onBackToTOC }) {
           {topicQuizzes.length > 0 ? (
             <button
               className="btn btn-gradient btn-sm flex items-center gap-6"
-              onClick={() => setActiveTab('quiz')}
+              onClick={handleLaunchQuiz}
               id="btn-start-topic-quiz"
             >
               <Play style={{ width: 14, height: 14 }} />
@@ -270,6 +281,10 @@ export default function TopicStudyPage({ onBackToTOC }) {
             onAddNewSlideSet={(slides) => {
               addTopicContent(currentTopic.id, 'presentation', 'Lesson Slide Deck', slides, presentationContents.length + 1)
             }}
+            onGenerateAiQuiz={deck => {
+              setAiQuizDeck(deck)
+              setShowAiQuizModal(true)
+            }}
           />
         )}
 
@@ -295,7 +310,7 @@ export default function TopicStudyPage({ onBackToTOC }) {
             textContents={textContents}
             presentationContents={presentationContents}
             quizzes={topicQuizzes}
-            onProceedToQuiz={() => setActiveTab('quiz')}
+            onProceedToQuiz={handleLaunchQuiz}
           />
         )}
 
@@ -305,10 +320,12 @@ export default function TopicStudyPage({ onBackToTOC }) {
             quizzes={topicQuizzes}
             results={topicResults}
             isFaculty={isFaculty}
+            startSignal={quizStartSignal}
             onOpenCreateModal={() => setShowCreateQuizModal(true)}
             onSubmitResult={submitQuizResult}
             onCompleteExternal={completeExternalQuiz}
             onDeleteQuiz={deleteQuiz}
+            onClearTopicQuizzes={() => deleteTopicQuizzes(currentTopic.id)}
             onBackToTOC={onBackToTOC}
             nextTopic={nextTopic}
             onNextTopic={handleNextTopic}
@@ -349,6 +366,25 @@ export default function TopicStudyPage({ onBackToTOC }) {
           }}
         />
       )}
+
+      {/* Modal: AI-generated quiz from uploaded presentation */}
+      {showAiQuizModal && aiQuizDeck && (
+        <AiQuizGenerator
+          slides={aiQuizDeck.extractedSlides || []}
+          topicId={currentTopic.id}
+          topicTitle={currentTopic.title}
+          onClose={() => {
+            setShowAiQuizModal(false)
+            setAiQuizDeck(null)
+          }}
+          onSave={() => {
+            setShowAiQuizModal(false)
+            setAiQuizDeck(null)
+            fetchQuizzes(currentTopic.id)
+          }}
+        />
+      )}
+
     </div>
   )
 }
@@ -430,6 +466,7 @@ function PresentationSection({
   isFaculty,
   onUploadPresentation,
   onDeletePresentation,
+  onGenerateAiQuiz,
 }) {
   // Default interactive slides if none exist yet
   const defaultSlides = [
@@ -645,15 +682,28 @@ function PresentationSection({
 
         <div className="flex items-center gap-8" style={{ flexWrap: 'wrap' }}>
           {isFaculty && (
-            <button
-              type="button"
-              className="btn btn-gradient btn-sm flex items-center gap-6"
-              onClick={() => setShowUploadModal(true)}
-              id="btn-upload-topic-presentation"
-            >
-              <Upload style={{ width: 15, height: 15 }} />
-              Upload PDF / PPT
-            </button>
+            <>
+              <button
+                type="button"
+                className="btn btn-gradient btn-sm flex items-center gap-6"
+                onClick={() => setShowUploadModal(true)}
+                id="btn-upload-topic-presentation"
+              >
+                <Upload style={{ width: 15, height: 15 }} />
+                Upload PDF / PPT
+              </button>
+              {activeDeck?.extractedSlides?.length && onGenerateAiQuiz && (
+                <button
+                  type="button"
+                  className="btn btn-gradient btn-sm flex items-center gap-6"
+                  onClick={() => onGenerateAiQuiz(activeDeck)}
+                  id="btn-generate-ai-quiz-from-deck"
+                >
+                  <Sparkles style={{ width: 15, height: 15 }} />
+                  Generate AI Quiz
+                </button>
+              )}
+            </>
           )}
 
           {activeDeck?.type === 'file' && activeDeck.fileUrl && (
