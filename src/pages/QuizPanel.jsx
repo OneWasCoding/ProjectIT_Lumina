@@ -54,8 +54,24 @@ function toGformEmbedUrl(value) {
 
 const correctOf = (q) => (q.correct_answer !== undefined ? q.correct_answer : q.correctAnswer)
 
+const normalizeOptions = (opts) => {
+  if (Array.isArray(opts)) return opts
+  if (typeof opts === 'string') {
+    try {
+      const parsed = JSON.parse(opts)
+      if (Array.isArray(parsed)) return parsed
+    } catch {
+      // ignore
+    }
+  }
+  if (opts && typeof opts === 'object') return Object.values(opts)
+  return []
+}
+
 const sortQuestions = (qs) =>
-  [...(qs || [])].sort((a, b) => (a.order_number || 0) - (b.order_number || 0))
+  [...(qs || [])]
+    .map(q => ({ ...q, options: normalizeOptions(q?.options) }))
+    .sort((a, b) => (a.order_number || 0) - (b.order_number || 0))
 
 /* ============================================================
    QUIZ SECTION (selector + in-app runner + Google Forms)
@@ -65,30 +81,51 @@ export default function QuizSection({
   quizzes,
   results,
   isFaculty,
+  startSignal = 0,
   onOpenCreateModal,
   onSubmitResult,
   onCompleteExternal,
   onDeleteQuiz,
+  onClearTopicQuizzes,
   onBackToTOC,
   nextTopic,
   onNextTopic,
 }) {
   const [selectedId, setSelectedId] = useState(null)
+  const [confirmDeleteMode, setConfirmDeleteMode] = useState(null) // null | 'single' | 'all'
+  const [deleting, setDeleting] = useState(false)
+  const [facultyTestMode, setFacultyTestMode] = useState(false)
   const active = quizzes.find(q => q.id === selectedId) || quizzes[0] || null
 
   useEffect(() => {
     if (selectedId && !quizzes.some(q => q.id === selectedId)) setSelectedId(null)
+    setConfirmDeleteMode(null)
   }, [quizzes, selectedId])
+
+  useEffect(() => {
+    if (startSignal > 0 && isFaculty && active && active.quiz_type !== 'gform') {
+      setFacultyTestMode(true)
+    }
+  }, [startSignal, isFaculty, active])
 
   const isGform = active?.quiz_type === 'gform'
   const questions = isGform ? [] : sortQuestions(active?.quiz_questions)
   const myResults = (results || []).filter(r => r.quiz_id === active?.id)
 
-  const handleDelete = () => {
-    if (!active) return
-    if (window.confirm(`Delete the quiz "${active.title}" and all of its student results?`)) {
-      onDeleteQuiz(active.id)
-    }
+  const executeDeleteSingle = async () => {
+    if (!active || !onDeleteQuiz) return
+    setDeleting(true)
+    await onDeleteQuiz(active.id)
+    setDeleting(false)
+    setConfirmDeleteMode(null)
+  }
+
+  const executeDeleteAll = async () => {
+    if (!onClearTopicQuizzes) return
+    setDeleting(true)
+    await onClearTopicQuizzes()
+    setDeleting(false)
+    setConfirmDeleteMode(null)
   }
 
   return (
@@ -108,44 +145,164 @@ export default function QuizSection({
         </div>
 
         {isFaculty && (
-          <div className="flex items-center gap-8">
+          <div className="flex items-center gap-8" style={{ flexWrap: 'wrap' }}>
+            {active && !isGform && (
+              <button
+                type="button"
+                className="btn btn-outline btn-sm flex items-center gap-6"
+                onClick={() => setFacultyTestMode(v => !v)}
+                id="btn-faculty-try-quiz"
+              >
+                <Play style={{ width: 15, height: 15 }} />
+                {facultyTestMode ? 'View Answer Key' : 'Try Quiz'}
+              </button>
+            )}
             {active && (
               <button
-                className="btn btn-icon btn-outline btn-sm"
+                type="button"
+                className="btn btn-outline btn-sm flex items-center gap-6"
                 style={{ color: 'var(--accent-danger)', borderColor: 'rgba(255,71,87,0.35)' }}
-                onClick={handleDelete}
-                title="Delete this quiz"
+                onClick={() => setConfirmDeleteMode(confirmDeleteMode === 'single' ? null : 'single')}
+                disabled={deleting}
+                id="btn-faculty-delete-quiz"
+                title="Delete the currently selected quiz"
               >
                 <Trash2 style={{ width: 15, height: 15 }} />
+                Delete Quiz
+              </button>
+            )}
+            {quizzes.length > 1 && onClearTopicQuizzes && (
+              <button
+                type="button"
+                className="btn btn-outline btn-sm flex items-center gap-6"
+                style={{ color: 'var(--accent-danger)', borderColor: 'rgba(255,71,87,0.35)' }}
+                onClick={() => setConfirmDeleteMode(confirmDeleteMode === 'all' ? null : 'all')}
+                disabled={deleting}
+                id="btn-faculty-clear-all-quizzes"
+                title="Remove all quizzes from this topic"
+              >
+                <Trash2 style={{ width: 15, height: 15 }} />
+                Clear All ({quizzes.length})
               </button>
             )}
             <button
-              className="btn btn-outline btn-sm flex items-center gap-6"
+              className="btn btn-gradient btn-sm flex items-center gap-6"
               onClick={onOpenCreateModal}
               id="btn-faculty-upload-quiz"
             >
               <Plus style={{ width: 16, height: 16 }} />
-              Add Quiz
+              Add Quiz (Choose Type)
             </button>
           </div>
         )}
       </div>
 
+      {isFaculty && confirmDeleteMode && active && (
+        <div
+          className="card mb-16"
+          style={{
+            padding: '14px 18px',
+            borderColor: 'rgba(255, 71, 87, 0.45)',
+            background: 'rgba(255, 71, 87, 0.08)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: 12,
+          }}
+        >
+          <span style={{ fontSize: 13 }}>
+            {confirmDeleteMode === 'all' ? (
+              <>
+                Delete <strong>all {quizzes.length} quizzes</strong> in <strong>{topic?.title || 'this topic'}</strong> and their student attempts?
+              </>
+            ) : (
+              <>
+                Delete the quiz <strong>"{active.title}"</strong> and all of its student attempts?
+              </>
+            )}
+          </span>
+          <div className="flex items-center gap-8">
+            <button
+              type="button"
+              className="btn btn-outline btn-sm"
+              onClick={() => setConfirmDeleteMode(null)}
+              disabled={deleting}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm flex items-center gap-6"
+              style={{ background: 'var(--accent-danger)', color: '#fff', border: 'none' }}
+              onClick={confirmDeleteMode === 'all' ? executeDeleteAll : executeDeleteSingle}
+              disabled={deleting}
+              id="btn-confirm-delete-quiz"
+            >
+              <Trash2 style={{ width: 14, height: 14 }} />
+              {deleting
+                ? 'Deleting…'
+                : confirmDeleteMode === 'all'
+                  ? `Yes, Clear All (${quizzes.length})`
+                  : 'Yes, Delete Quiz'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {quizzes.length > 1 && (
         <div className="presentation-deck-switcher mb-16">
           <div className="presentation-deck-pills">
             {quizzes.map(q => (
-              <button
+              <div
                 key={q.id}
-                type="button"
                 className={`presentation-deck-pill ${q.id === active?.id ? 'active' : ''}`}
-                onClick={() => setSelectedId(q.id)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 8, paddingRight: isFaculty ? 8 : undefined }}
               >
-                <span className={`deck-kind-tag ${q.quiz_type === 'gform' ? 'kind-pptx' : 'kind-slides'}`}>
-                  {q.quiz_type === 'gform' ? 'FORM' : 'QUIZ'}
-                </span>
-                <span className="deck-pill-title">{q.title}</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedId(q.id)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'inherit',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    cursor: 'pointer',
+                    padding: 0,
+                    font: 'inherit',
+                  }}
+                >
+                  <span className={`deck-kind-tag ${q.quiz_type === 'gform' ? 'kind-pptx' : 'kind-slides'}`}>
+                    {q.quiz_type === 'gform' ? 'FORM' : 'QUIZ'}
+                  </span>
+                  <span className="deck-pill-title">{q.title}</span>
+                </button>
+                {isFaculty && onDeleteQuiz && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setSelectedId(q.id)
+                      setConfirmDeleteMode('single')
+                    }}
+                    title={`Delete "${q.title}"`}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--accent-danger)',
+                      cursor: 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      padding: 2,
+                      opacity: 0.85,
+                    }}
+                  >
+                    <X style={{ width: 14, height: 14 }} />
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         </div>
@@ -159,7 +316,7 @@ export default function QuizSection({
           </p>
           <p style={{ fontSize: 13, maxWidth: 460, margin: '0 auto' }}>
             {isFaculty
-              ? 'Click "Add Quiz" to build a quiz here or share a Google Form link for this topic.'
+              ? 'Click "Add Quiz" to create a quiz using AI generation from presentations, build your own manually, or link a Google Form.'
               : 'Your instructor has not uploaded a quiz for this topic yet.'}
           </p>
         </div>
@@ -179,15 +336,23 @@ export default function QuizSection({
         />
       )}
 
-      {active && !isGform && isFaculty && <QuizPreview quiz={active} questions={questions} />}
+      {active && !isGform && isFaculty && !facultyTestMode && (
+        <QuizPreview
+          quiz={active}
+          questions={questions}
+          onTryQuiz={() => setFacultyTestMode(true)}
+        />
+      )}
 
-      {active && !isGform && !isFaculty && (
+      {active && !isGform && (!isFaculty || facultyTestMode) && (
         <QuizRunner
           key={active.id}
           topic={topic}
           quiz={active}
           questions={questions}
           myResults={myResults}
+          isFaculty={isFaculty}
+          startSignal={startSignal}
           onSubmitResult={onSubmitResult}
           onBackToTOC={onBackToTOC}
           nextTopic={nextTopic}
@@ -312,13 +477,21 @@ function GformQuiz({ quiz, isFaculty, completed, completedAt, onComplete, onBack
 /* ============================================================
    Faculty read-only preview of an in-app quiz
    ============================================================ */
-function QuizPreview({ quiz, questions }) {
+function QuizPreview({ quiz, questions, onTryQuiz }) {
   return (
     <div>
-      <p className="section-subtitle mb-16">
-        Preview (instructor view). Students answer these questions with a {quiz.time_limit_minutes || 10}-minute timer.
-        Results appear on the Scores page.
-      </p>
+      <div className="flex items-center justify-between mb-16" style={{ flexWrap: 'wrap', gap: 12 }}>
+        <p className="section-subtitle" style={{ marginBottom: 0 }}>
+          Preview (instructor view). Students answer these questions with a {quiz.time_limit_minutes || 10}-minute timer.
+          Results appear on the Scores page.
+        </p>
+        {onTryQuiz && questions.length > 0 && (
+          <button type="button" className="btn btn-gradient btn-sm flex items-center gap-6" onClick={onTryQuiz}>
+            <Play style={{ width: 14, height: 14 }} />
+            Start / Test Quiz
+          </button>
+        )}
+      </div>
       <div className="review-cards-stack">
         {questions.map((q, idx) => (
           <div key={q.id || idx} className="review-card">
@@ -345,7 +518,7 @@ function QuizPreview({ quiz, questions }) {
 /* ============================================================
    Student quiz runner (timer, navigation, server-verified score)
    ============================================================ */
-function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackToTOC, nextTopic, onNextTopic }) {
+function QuizRunner({ topic, quiz, questions, myResults, isFaculty = false, startSignal = 0, onSubmitResult, onBackToTOC, nextTopic, onNextTopic }) {
   const limitSeconds = (quiz.time_limit_minutes || 10) * 60
   const [quizStarted, setQuizStarted] = useState(false)
   const [currentQIndex, setCurrentQIndex] = useState(0)
@@ -358,6 +531,7 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
   const answersRef = useRef({})
   const endAtRef = useRef(0)
   const submittedRef = useRef(false)
+  const handledSignalRef = useRef(0)
 
   answersRef.current = answers
 
@@ -379,6 +553,14 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
     setQuizStarted(true)
   }
 
+  // Automatically start the quiz when triggered from "Start Topic Quiz" in the top bar or Summary tab
+  useEffect(() => {
+    if (startSignal > 0 && startSignal !== handledSignalRef.current && questions.length > 0 && (!quizStarted || submitted)) {
+      handledSignalRef.current = startSignal
+      handleStart()
+    }
+  }, [startSignal, questions.length, quizStarted, submitted])
+
   const submit = async (auto = false) => {
     if (submittedRef.current) return
     submittedRef.current = true
@@ -398,9 +580,12 @@ function QuizRunner({ topic, quiz, questions, myResults, onSubmitResult, onBackT
     const percentage = total > 0 ? Math.round((score / total) * 100) : 0
     const passed = percentage >= passingThreshold
 
-    // The server re-grades the attempt; show the official score when available
-    const res = await onSubmitResult(quiz.id, score, total, percentage, passed, payload)
-    const official = res?.data
+    let official = null
+    if (!isFaculty && onSubmitResult) {
+      // The server re-grades the attempt; show the official score when available
+      const res = await onSubmitResult(quiz.id, score, total, percentage, passed, payload)
+      official = res?.data
+    }
 
     setResultData({
       score: official?.score ?? score,

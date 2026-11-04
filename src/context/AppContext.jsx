@@ -264,7 +264,7 @@ export function AppProvider({ children }) {
     setProfile(null)
     setSelectedSubject(null)
     setSubjects(DEFAULT_SUBJECTS)
-    setTopics(DEFAULT_TOPICS)
+    setTopics([])
     setCurrentTopic(null)
     setTopicContent([])
     setQuizzes([])
@@ -346,13 +346,13 @@ export function AppProvider({ children }) {
         // Default to number 1 selection
         setCurrentTopic(data[0])
       } else {
-        setTopics(DEFAULT_TOPICS)
-        setCurrentTopic(DEFAULT_TOPICS[0])
+        setTopics([])
+        setCurrentTopic(null)
       }
       if (error) console.warn('Supabase fetchTopics:', error.message)
     } catch {
-      setTopics(DEFAULT_TOPICS)
-      setCurrentTopic(DEFAULT_TOPICS[0])
+      setTopics([])
+      setCurrentTopic(null)
     }
   }, [])
 
@@ -580,6 +580,49 @@ export function AppProvider({ children }) {
 
   // ========== Quizzes ==========
 
+  // Fallback question loader in case RLS restricts quiz_questions to faculty and students read from student_quiz_questions
+  const hydrateQuizQuestions = useCallback(async (quizList) => {
+    if (!Array.isArray(quizList) || quizList.length === 0) return quizList
+    const missingIds = quizList
+      .filter(q => q.quiz_type !== 'gform' && (!Array.isArray(q.quiz_questions) || q.quiz_questions.length === 0) && isUuid(q.id))
+      .map(q => q.id)
+
+    if (missingIds.length === 0) return quizList
+
+    let fetchedQuestions = []
+    try {
+      const { data: viewRows, error: viewErr } = await supabase
+        .from('student_quiz_questions')
+        .select('*')
+        .in('quiz_id', missingIds)
+        .order('order_number')
+      if (!viewErr && Array.isArray(viewRows) && viewRows.length > 0) {
+        fetchedQuestions = viewRows
+      } else {
+        const { data: tableRows } = await supabase
+          .from('quiz_questions')
+          .select('*')
+          .in('quiz_id', missingIds)
+          .order('order_number')
+        if (Array.isArray(tableRows)) fetchedQuestions = tableRows
+      }
+    } catch {
+      // ignore
+    }
+
+    if (fetchedQuestions.length === 0) return quizList
+
+    const byQuiz = {}
+    fetchedQuestions.forEach(row => {
+      if (!byQuiz[row.quiz_id]) byQuiz[row.quiz_id] = []
+      byQuiz[row.quiz_id].push(row)
+    })
+
+    return quizList.map(q =>
+      byQuiz[q.id]?.length ? { ...q, quiz_questions: byQuiz[q.id] } : q
+    )
+  }, [])
+
   const fetchQuizzes = useCallback(async (topicId) => {
     try {
       const { data, error } = await supabase
@@ -589,13 +632,14 @@ export function AppProvider({ children }) {
         .order('created_at')
 
       if (!error && data) {
-        setQuizzes(prev => [...prev.filter(q => q.topic_id !== topicId), ...data])
+        const hydrated = await hydrateQuizQuestions(data)
+        setQuizzes(prev => [...prev.filter(q => Number(q.topic_id) !== Number(topicId)), ...hydrated])
       }
       if (error) console.warn('Supabase fetchQuizzes:', error.message)
     } catch {
       // Retain active quizzes
     }
-  }, [])
+  }, [hydrateQuizQuestions])
 
   // Loads the quizzes of several topics at once (used by the table of contents to know which topics have a quiz)
   const fetchSubjectQuizzes = useCallback(async (topicIds) => {
@@ -608,12 +652,13 @@ export function AppProvider({ children }) {
         .in('topic_id', ids)
         .order('created_at')
       if (!error && data) {
-        setQuizzes(prev => [...prev.filter(q => !ids.includes(q.topic_id)), ...data])
+        const hydrated = await hydrateQuizQuestions(data)
+        setQuizzes(prev => [...prev.filter(q => !ids.includes(Number(q.topic_id))), ...hydrated])
       }
     } catch {
       // keep current quizzes
     }
-  }, [])
+  }, [hydrateQuizQuestions])
 
   // extra: { quizType: 'internal' | 'gform', externalUrl?: string }
   const addQuiz = useCallback(async (topicId, title, timeLimit, maxItems, passingScore, questions, extra = {}) => {
@@ -704,6 +749,9 @@ export function AppProvider({ children }) {
 
   const deleteQuiz = useCallback(async (quizId) => {
     if (isUuid(quizId) && isUuid(user?.id)) {
+      // Remove dependent results and questions first in case ON DELETE CASCADE is not active
+      await supabase.from('quiz_results').delete().eq('quiz_id', quizId)
+      await supabase.from('quiz_questions').delete().eq('quiz_id', quizId)
       const { error } = await supabase.from('quizzes').delete().eq('id', quizId)
       if (error) {
         showToast(error.message || 'Could not delete the quiz', 'error')
@@ -713,9 +761,31 @@ export function AppProvider({ children }) {
     setQuizzes(prev => prev.filter(q => q.id !== quizId))
     setQuizResults(prev => prev.filter(r => r.quiz_id !== quizId))
     setAllResults(prev => prev.filter(r => r.quiz_id !== quizId))
-    showToast('Quiz deleted', 'info')
+    showToast('Quiz deleted from topic', 'info')
     return {}
   }, [user, showToast])
+
+  const deleteTopicQuizzes = useCallback(async (topicId) => {
+    const topicQuizzesToDelete = quizzes.filter(q => q.topic_id === topicId)
+    const uuidIds = topicQuizzesToDelete.map(q => q.id).filter(isUuid)
+    const allIds = new Set(topicQuizzesToDelete.map(q => q.id))
+
+    if (uuidIds.length > 0 && isUuid(user?.id)) {
+      await supabase.from('quiz_results').delete().in('quiz_id', uuidIds)
+      await supabase.from('quiz_questions').delete().in('quiz_id', uuidIds)
+      const { error } = await supabase.from('quizzes').delete().in('id', uuidIds)
+      if (error) {
+        showToast(error.message || 'Could not clear topic quizzes', 'error')
+        return { error }
+      }
+    }
+
+    setQuizzes(prev => prev.filter(q => q.topic_id !== topicId))
+    setQuizResults(prev => prev.filter(r => !allIds.has(r.quiz_id)))
+    setAllResults(prev => prev.filter(r => !allIds.has(r.quiz_id)))
+    showToast('All quizzes removed from this topic', 'info')
+    return {}
+  }, [quizzes, user, showToast])
 
   // Google Forms quizzes can't be auto-graded: the student confirms they finished it,
   // which is recorded as a completed attempt (and unlocks the next topic).
@@ -1267,6 +1337,7 @@ export function AppProvider({ children }) {
     addQuiz,
     fetchSubjectQuizzes,
     deleteQuiz,
+    deleteTopicQuizzes,
     completeExternalQuiz,
     // Results
     quizResults,
