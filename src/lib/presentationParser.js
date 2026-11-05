@@ -1,4 +1,4 @@
-const MAX_PRESENTATION_BYTES = 50 * 1024 * 1024 // 50 MB (matches faculty-files bucket)
+﻿const MAX_PRESENTATION_BYTES = 50 * 1024 * 1024 // 50 MB (matches faculty-files bucket)
 
 const SLIDE_COLORS = ['#7c5cfc', '#00d4aa', '#ff6b9d', '#ffb547', '#3b82f6', '#10b981']
 
@@ -116,7 +116,7 @@ function parseSlideXml(xmlText, slideNumber) {
 
   return {
     title: title || `Slide ${slideNumber}`,
-    bullets: paragraphs.length > 0 ? paragraphs.slice(0, 10) : ['(Visual slide — switch to Document Viewer or download the file to view graphics)'],
+    bullets: paragraphs.length > 0 ? paragraphs.slice(0, 10) : ['(Visual slide â€” switch to Document Viewer or download the file to view graphics)'],
     color: SLIDE_COLORS[(slideNumber - 1) % SLIDE_COLORS.length],
     insight: paragraphs.length > 10 ? `+ ${paragraphs.length - 10} more line(s) on this slide` : '',
   }
@@ -167,68 +167,51 @@ async function readZipEntries(buffer) {
 
 /**
  * Extract text from an uploaded file (PDF or PowerPoint) for AI quiz generation.
- * Returns { kind, text, slides }:
- *   kind   - 'pdf' | 'pptx' | 'ppt' | null
- *   text   - flattened plain text extracted from the file
- *   slides - for pptx: the extracted slide objects; for pdf: a single synthetic slide
  */
 export async function extractTextFromFile(file) {
   if (!file) return { kind: null, text: '', slides: [] }
   const kind = detectPresentationKind(file)
   if (!kind) return { kind: null, text: '', slides: [] }
-
   if (kind === 'pptx') {
     const slides = await extractPptxSlides(file)
-    const text = slides
-      .map((s, i) => `Slide ${i + 1} — ${s.title || ''}\n${(s.bullets || []).join('\n')}`)
-      .join('\n\n')
+    const text = slides.map((s, i) => 'Slide ' + (i + 1) + ' - ' + (s.title || '') + '\n' + ((s.bullets || []).join('\n'))).join('\n\n')
     return { kind, text, slides }
   }
-
   if (kind === 'pdf') {
     const text = await extractPdfText(file)
-    const slides = text.trim()
-      ? [
-          {
-            title: file.name.replace(/\.[^.]+$/, '') || 'Uploaded PDF',
-            bullets: text.split(/\n+/).filter(Boolean).slice(0, 40),
-            color: '#7c5cfc',
-          },
-        ]
-      : []
+    const chunks = text ? text.split(/\n--- Page \d+ ---\n/).filter(t => t.trim()) : []
+    const slides = chunks.length ? chunks.slice(0, 30).map((chunk, i) => ({
+      title: 'PDF Page ' + (i + 1) + ': ' + ((file.name || 'Document').replace(/\\.[^.]+$/, '')),
+      bullets: chunk.split(/\n+/).map(x => x.trim()).filter(Boolean).slice(0, 12),
+      color: SLIDE_COLORS[i % SLIDE_COLORS.length],
+      insight: '',
+    })) : []
     return { kind, text, slides }
   }
-
-  // .ppt (binary PowerPoint) is not text-extractable client-side
   return { kind, text: '', slides: [] }
 }
-
-/**
- * Extract text from a .pdf file using pdf.js (browser build).
- * Falls back gracefully if pdf.js or its worker cannot be loaded.
- */
 async function extractPdfText(file) {
   try {
     const pdfjsLib = await import('pdfjs-dist')
-    if (pdfjsLib.GlobalWorkerOptions) {
-      pdfjsLib.GlobalWorkerOptions.workerSrc =
-        `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version || '4.8.69'}/pdf.worker.min.js`
-    }
+    try {
+      if (pdfjsLib.GlobalWorkerOptions && !pdfjsLib.GlobalWorkerOptions.workerSrc) {
+        const worker = await import('pdfjs-dist/build/pdf.worker.min.mjs?url')
+        pdfjsLib.GlobalWorkerOptions.workerSrc = worker.default || worker
+      }
+    } catch {}
     const arrayBuffer = await file.arrayBuffer()
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer, useWorkerFetch: false, isEvalSupported: false }).promise
     let text = ''
-    for (let i = 1; i <= pdf.numPages; i++) {
+    const maxPages = Math.min(pdf.numPages, 40)
+    for (let i = 1; i <= maxPages; i++) {
       const page = await pdf.getPage(i)
       const content = await page.getTextContent()
-      const pageText = content.items.map(item => item.str || '').join(' ')
-      text += `\n--- Page ${i} ---\n${pageText}`
+      const pageText = (content.items || []).map(item => item.str || '').join(' ').replace(/\s+/g, ' ').trim()
+      if (pageText) text += '\n--- Page ' + i + ' ---\n' + pageText
     }
-    pdf.destroy()
+    try { pdf.destroy() } catch {}
     return text.trim()
-  } catch (err) {
-    console.warn('PDF text extraction failed:', err)
-    return ''
-  }
+  } catch (err) { console.warn('PDF text extraction failed:', err); return '' }
 }
 
 async function extractZipEntryBytes(buffer, entry) {
@@ -255,4 +238,7 @@ async function extractZipEntryBytes(buffer, entry) {
   }
   throw new Error(`Unsupported ZIP compression method: ${entry.compressionMethod}`)
 }
+
+
+
 

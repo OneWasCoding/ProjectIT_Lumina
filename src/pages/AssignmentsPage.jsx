@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import Avatar from '../components/Avatar.jsx'
+import { formatFileSize } from '../lib/presentationParser.js'
 import {
   ClipboardList,
   Plus,
@@ -12,6 +13,9 @@ import {
   Image as ImageIcon,
   Upload,
   ZoomIn,
+  FileText,
+  Download,
+  Paperclip,
 } from 'lucide-react'
 
 const MAX_PHOTOS_PER_SUBMISSION = 6
@@ -28,6 +32,11 @@ const byDue = (a, b) => {
 
 const getSubmissionPhotos = (submission) =>
   Array.isArray(submission?.attached_files) ? submission.attached_files.filter(f => f && f.url) : []
+
+const getAssignmentPdfs = (assignment) =>
+  Array.isArray(assignment?.attached_files)
+    ? assignment.attached_files.filter(f => f && f.url && ((f.kind || '').toLowerCase() === 'pdf' || /\.pdf$/i.test(f.name || '')))
+    : []
 
 export function studentAssignmentStatus(assignment, submission) {
   if (submission?.status === 'graded') {
@@ -48,7 +57,7 @@ export default function AssignmentsPage() {
   const {
     user, profile, selectedSubject, assignments, submissions,
     fetchAssignments, fetchSubmissions, addAssignment, deleteAssignment,
-    uploadSubmissionPhoto, submitAssignment, gradeSubmission, showToast,
+    uploadAssignmentPdf, uploadSubmissionPhoto, submitAssignment, gradeSubmission, showToast,
   } = useApp()
   const isFaculty = profile?.role === 'faculty'
   const subjectId = selectedSubject?.id
@@ -108,6 +117,7 @@ export default function AssignmentsPage() {
               const toGrade = subs.filter(s => s.status !== 'graded').length
               const mine = mySubmission(a.id)
               const myPhotos = getSubmissionPhotos(mine)
+              const assignmentPdfs = getAssignmentPdfs(a)
               const status = studentAssignmentStatus(a, mine)
               const overdue = a.due_date && new Date(a.due_date) < new Date()
 
@@ -119,6 +129,9 @@ export default function AssignmentsPage() {
                     <div className="assignment-meta">
                       <span className={overdue ? 'text-danger' : ''}><Clock /> Due {formatDateTime(a.due_date)}</span>
                       <span>{a.max_points} pts</span>
+                      {assignmentPdfs.length > 0 && (
+                        <span><Paperclip /> {assignmentPdfs.length} PDF{assignmentPdfs.length === 1 ? '' : 's'}</span>
+                      )}
                       {!isFaculty && myPhotos.length > 0 && (
                         <span><ImageIcon /> {myPhotos.length} photo{myPhotos.length === 1 ? '' : 's'}</span>
                       )}
@@ -143,6 +156,8 @@ export default function AssignmentsPage() {
         <CreateAssignmentModal
           onClose={() => setShowCreate(false)}
           onSave={(fields) => addAssignment(subjectId, fields)}
+          onUploadPdf={uploadAssignmentPdf}
+          showToast={showToast}
         />
       )}
 
@@ -192,24 +207,43 @@ function PhotoLightbox({ photo, onClose }) {
 }
 
 /* ---------------- Faculty: create ---------------- */
-function CreateAssignmentModal({ onClose, onSave }) {
+function CreateAssignmentModal({ onClose, onSave, onUploadPdf, showToast }) {
   const [title, setTitle] = useState('')
   const [instructions, setInstructions] = useState('')
   const [maxPoints, setMaxPoints] = useState(100)
   const [dueDate, setDueDate] = useState('')
+  const [attachedPdfs, setAttachedPdfs] = useState([])
+  const [uploadingPdf, setUploadingPdf] = useState(false)
   const [saving, setSaving] = useState(false)
+  const pdfInputRef = useRef(null)
+
+  const handlePdfSelected = async (file) => {
+    if (!file) return
+    setUploadingPdf(true)
+    try {
+      const res = await onUploadPdf(file)
+      if (res?.file) setAttachedPdfs(prev => [...prev, res.file])
+    } finally {
+      setUploadingPdf(false)
+      if (pdfInputRef.current) pdfInputRef.current.value = ''
+    }
+  }
+
+  const removePdf = (id) => setAttachedPdfs(prev => prev.filter(f => f.id !== id))
 
   const handleSave = async () => {
-    if (!title.trim()) return
+    if (!title.trim() || uploadingPdf) return
     setSaving(true)
     const { error } = await onSave({
       title: title.trim(),
       instructions: instructions.trim(),
       maxPoints: Math.min(Math.max(Number(maxPoints) || 100, 1), 1000),
       dueDate,
+      attachedFiles: attachedPdfs,
     })
     setSaving(false)
     if (!error) onClose()
+    else showToast?.(error.message || 'Could not create assignment', 'error')
   }
 
   return (
@@ -239,11 +273,47 @@ function CreateAssignmentModal({ onClose, onSave }) {
                 <input id="asg-due" type="datetime-local" className="form-input" value={dueDate} onChange={e => setDueDate(e.target.value)} />
               </div>
             </div>
+            <div className="form-group">
+              <label className="form-label">PDF Attachment (optional)</label>
+              <p className="form-hint" style={{ marginBottom: 8 }}>Attach a PDF file for students to download (instructions, worksheet, reference material).</p>
+              <input
+                ref={pdfInputRef}
+                type="file"
+                accept="application/pdf,.pdf"
+                hidden
+                onChange={e => handlePdfSelected(e.target.files?.[0])}
+              />
+              <div className="flex items-center gap-8" style={{ flexWrap: 'wrap' }}>
+                <button type="button" className="btn btn-outline btn-sm flex items-center gap-6" onClick={() => pdfInputRef.current?.click()} disabled={uploadingPdf}>
+                  <Upload style={{ width: 14, height: 14 }} />
+                  {uploadingPdf ? 'Uploading PDF...' : 'Attach PDF'}
+                </button>
+                {attachedPdfs.length > 0 && <span className="badge badge-purple">{attachedPdfs.length} PDF{attachedPdfs.length === 1 ? '' : 's'} attached</span>}
+              </div>
+              {attachedPdfs.length > 0 && (
+                <div className="flex flex-col gap-8" style={{ marginTop: 10 }}>
+                  {attachedPdfs.map(pdf => (
+                    <div key={pdf.id} className="card" style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                      <div className="flex items-center gap-10" style={{ minWidth: 0 }}>
+                        <FileText style={{ width: 16, height: 16, color: 'var(--accent-primary)', flexShrink: 0 }} />
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pdf.name}</div>
+                          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{formatFileSize(pdf.size)}</div>
+                        </div>
+                      </div>
+                      <button type="button" className="btn btn-icon btn-outline btn-sm" onClick={() => removePdf(pdf.id)} title="Remove PDF">
+                        <X style={{ width: 14, height: 14 }} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
         <div className="modal-footer">
           <button className="btn btn-outline" onClick={onClose}>Cancel</button>
-          <button className="btn btn-gradient" onClick={handleSave} disabled={!title.trim() || saving} id="btn-save-assignment">
+          <button className="btn btn-gradient" onClick={handleSave} disabled={!title.trim() || saving || uploadingPdf} id="btn-save-assignment">
             {saving ? <span className="btn-loader" /> : 'Create Assignment'}
           </button>
         </div>
@@ -320,6 +390,62 @@ function StudentAssignmentModal({ assignment, submission, onUploadPhoto, onSubmi
         <div className="modal-body">
           <h4 className="section-subheading mb-6">Instructions</h4>
           <p className="prewrap mb-24">{assignment.instructions || 'No instructions were provided.'}</p>
+
+          {getAssignmentPdfs(assignment).length > 0 && (
+            <div className="form-group mb-24">
+              <label className="form-label mb-6">Assignment PDF(s) from your instructor</label>
+              <div className="flex flex-col gap-12">
+                {getAssignmentPdfs(assignment).map(pdf => (
+                  <a
+                    key={pdf.id || pdf.url}
+                    href={pdf.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={`Open ${pdf.name || 'PDF'} in a new tab`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'stretch',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      overflow: 'hidden',
+                      background: 'var(--bg-card)',
+                      textDecoration: 'none',
+                      color: 'inherit',
+                      maxWidth: 520,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <div style={{
+                      width: 112,
+                      minWidth: 112,
+                      height: 112,
+                      background: '#fff',
+                      borderRight: '1px solid var(--border-color)',
+                      overflow: 'hidden',
+                      position: 'relative',
+                      pointerEvents: 'none',
+                    }}>
+                      <iframe
+                        src={`${pdf.url}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
+                        title={pdf.name || 'Assignment PDF preview'}
+                        style={{ width: '220%', height: '220%', border: 'none', transform: 'scale(0.455)', transformOrigin: 'top left', display: 'block', background: '#fff' }}
+                        tabIndex={-1}
+                        loading="lazy"
+                      />
+                    </div>
+                    <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 0, gap: 4 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {pdf.name || 'Assignment PDF'}
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>
+                        PDF{pdf.size ? ` · ${formatFileSize(pdf.size)}` : ''}
+                      </div>
+                    </div>
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
 
           {graded && (
             <div className="grade-box mb-24">
@@ -499,6 +625,62 @@ function FacultyAssignmentModal({ assignment, submissions, onGrade, onDelete, on
               <h4 className="section-subheading mb-6">Instructions</h4>
               <p className="prewrap mb-24">{assignment.instructions}</p>
             </>
+          )}
+
+          {getAssignmentPdfs(assignment).length > 0 && (
+            <div className="form-group mb-24">
+              <label className="form-label mb-6">Posted PDF file(s)</label>
+              <div className="flex flex-col gap-12">
+                {getAssignmentPdfs(assignment).map(pdf => (
+                  <a
+                    key={pdf.id || pdf.url}
+                    href={pdf.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={`Open ${pdf.name || 'PDF'} in a new tab`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'stretch',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      overflow: 'hidden',
+                      background: 'var(--bg-card)',
+                      textDecoration: 'none',
+                      color: 'inherit',
+                      maxWidth: 520,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <div style={{
+                      width: 112,
+                      minWidth: 112,
+                      height: 112,
+                      background: '#fff',
+                      borderRight: '1px solid var(--border-color)',
+                      overflow: 'hidden',
+                      position: 'relative',
+                      pointerEvents: 'none',
+                    }}>
+                      <iframe
+                        src={`${pdf.url}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
+                        title={pdf.name || 'Assignment PDF preview'}
+                        style={{ width: '220%', height: '220%', border: 'none', transform: 'scale(0.455)', transformOrigin: 'top left', display: 'block', background: '#fff' }}
+                        tabIndex={-1}
+                        loading="lazy"
+                      />
+                    </div>
+                    <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 0, gap: 4 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {pdf.name || 'Assignment PDF'}
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>
+                        PDF{pdf.size ? ` · ${formatFileSize(pdf.size)}` : ''}
+                      </div>
+                    </div>
+                  </a>
+                ))}
+              </div>
+            </div>
           )}
 
           <h4 className="section-subheading mb-12">Submissions</h4>

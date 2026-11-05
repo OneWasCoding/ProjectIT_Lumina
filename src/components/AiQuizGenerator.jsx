@@ -1,11 +1,12 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { generateQuizFromSlides, slidesToText } from '../lib/groqClient.js'
+import { extractTextFromFile } from '../lib/presentationParser.js'
 import { Sparkles, BrainCircuit, RotateCcw, Trash2, Plus, X, CheckCircle2, Save, AlertCircle } from 'lucide-react'
 
 const LETTERS = ['A', 'B', 'C', 'D']
 
-export default function AiQuizGenerator({ slides, topicId, topicTitle, onClose, onSave }) {
+export default function AiQuizGenerator({ slides, topicId, topicTitle, onClose, onSave, fileUrl, fileName, kind }) {
   const { addQuiz, showToast } = useApp()
   const defaultTitle = `${topicTitle || 'Topic'} Quiz (AI Generated)`
 
@@ -14,18 +15,56 @@ export default function AiQuizGenerator({ slides, topicId, topicTitle, onClose, 
   const [questionCount, setQuestionCount] = useState(8)
   const [subjectOverride, setSubjectOverride] = useState('')
   const [questions, setQuestions] = useState([])
+  const [sourceSlides, setSourceSlides] = useState(Array.isArray(slides) ? slides : [])
+  const [loadingSource, setLoadingSource] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const isConfigured = Boolean(import.meta.env.VITE_GROQ_API_KEY)
 
+  useEffect(() => {
+    setSourceSlides(Array.isArray(slides) ? slides : [])
+  }, [slides])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadSource() {
+      if (sourceSlides.length > 0) return
+      if (!fileUrl || !['pdf', 'pptx'].includes(String(kind || '').toLowerCase())) return
+      setLoadingSource(true)
+      setError('')
+      try {
+        const res = await fetch(fileUrl)
+        if (!res.ok) throw new Error('Could not fetch the uploaded file for AI analysis.')
+        const blob = await res.blob()
+        const file = new File([blob], fileName || `presentation.${kind || 'bin'}`, { type: blob.type || '' })
+        const extracted = await extractTextFromFile(file)
+        if (cancelled) return
+        if (Array.isArray(extracted.slides) && extracted.slides.length > 0) {
+          setSourceSlides(extracted.slides)
+        } else if (extracted.text && extracted.text.trim().length > 30) {
+          setSourceSlides([{ title: fileName || 'Uploaded File', bullets: extracted.text.split(/\n+/).slice(0, 40), color: '#7c5cfc', insight: '' }])
+        } else {
+          setError('Could not extract readable text from this file. For best results use a text-based PPTX or PDF.')
+        }
+      } catch (e) {
+        if (!cancelled) setError(e.message || 'Failed to read file for AI quiz generation.')
+      } finally {
+        if (!cancelled) setLoadingSource(false)
+      }
+    }
+    loadSource()
+    return () => { cancelled = true }
+  }, [fileUrl, fileName, kind, sourceSlides.length])
+
   const handleGenerate = useCallback(async () => {
     setError('')
-    if (!slides || slides.length === 0) return setError('No slide content available to generate a quiz from.')
+    const slidesToUse = sourceSlides && sourceSlides.length ? sourceSlides : (Array.isArray(slides) ? slides : [])
+    if (!slidesToUse || slidesToUse.length === 0) return setError('No slide content available to generate a quiz from. Upload a PPTX/PDF with readable text or wait for extraction to finish.')
     setGenerating(true)
     setStage('generating')
     try {
-      const { questions: generated } = await generateQuizFromSlides(slides, {
+      const { questions: generated } = await generateQuizFromSlides(slidesToUse, {
         count: questionCount,
         subject: subjectOverride.trim() || undefined,
         topic: topicTitle || '',
@@ -39,7 +78,7 @@ export default function AiQuizGenerator({ slides, topicId, topicTitle, onClose, 
     } finally {
       setGenerating(false)
     }
-  }, [slides, questionCount, subjectOverride, topicTitle])
+  }, [sourceSlides, slides, questionCount, subjectOverride, topicTitle])
 
   const addQuestion = () => {
     if (questions.length >= 50) return
@@ -201,7 +240,7 @@ export default function AiQuizGenerator({ slides, topicId, topicTitle, onClose, 
             <div className="form-group mb-20">
               <label className="form-label">Source Content</label>
               <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
-                {slides.length} slide(s) detected from the uploaded presentation. Groq will read the slide titles and bullet points to build the questions.
+                {loadingSource ? 'Reading uploaded file for AI analysis...' : `${sourceSlides.length} slide/page section(s) detected from the uploaded presentation/file. Groq will read the extracted text to build the questions.`}
               </p>
               <div
                 className="form-input"
@@ -220,7 +259,7 @@ export default function AiQuizGenerator({ slides, topicId, topicTitle, onClose, 
                 }}
                 id="ai-source-preview"
               >
-                {slidesToText(slides)}
+                {loadingSource ? 'Extracting text from file...' : (sourceSlides.length ? slidesToText(sourceSlides) : 'No extracted text available yet.')}
               </div>
             </div>
             <div className="modal-footer flex justify-between gap-10">
@@ -230,12 +269,16 @@ export default function AiQuizGenerator({ slides, topicId, topicTitle, onClose, 
               <button
                 className="btn btn-gradient flex items-center gap-8"
                 onClick={handleGenerate}
-                disabled={generating || !isConfigured}
+                disabled={generating || !isConfigured || loadingSource || sourceSlides.length === 0}
                 id="btn-generate-ai-quiz"
               >
                 {generating ? (
                   <>
                     <RotateCcw style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} /> Generating with Groq...
+                  </>
+                ) : loadingSource ? (
+                  <>
+                    <RotateCcw style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} /> Reading file...
                   </>
                 ) : (
                   <>
