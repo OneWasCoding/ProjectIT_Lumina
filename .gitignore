@@ -64,3 +64,5 @@ coverage/
 ehthumbs.db
 Thumbs.db
 Desktop.ini
+
+.vercel
