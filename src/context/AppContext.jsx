@@ -1114,13 +1114,14 @@ export function AppProvider({ children }) {
     }
   }, [user])
 
-  const addAssignment = useCallback(async (subjectId, { title, instructions, maxPoints, dueDate }) => {
+  const addAssignment = useCallback(async (subjectId, { title, instructions, maxPoints, dueDate, attachedFiles = [] }) => {
     const base = {
       subject_id: subjectId,
       title,
       instructions,
       max_points: Number(maxPoints) || 100,
       due_date: dueDate ? new Date(dueDate).toISOString() : null,
+      attached_files: Array.isArray(attachedFiles) ? attachedFiles : [],
     }
     if (isRemote(subjectId)) {
       const { data, error } = await supabase
@@ -1212,6 +1213,54 @@ export function AppProvider({ children }) {
       }
     } catch (e) {
       showToast(e.message || 'Photo upload failed', 'error')
+      return { error: e }
+    }
+  }, [user, showToast])
+
+  const uploadAssignmentPdf = useCallback(async (file) => {
+    try {
+      if (!file) throw new Error('Please choose a PDF file.')
+      const isPdf = file.type === 'application/pdf' || (file.name || '').toLowerCase().endsWith('.pdf')
+      if (!isPdf) throw new Error('Only PDF files are supported for assignment attachments.')
+      if (file.size > 50 * 1024 * 1024) throw new Error('PDF is too large. Maximum allowed size is 50 MB.')
+
+      const id = 'pdf-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7)
+      const safeName = (file.name || 'assignment.pdf').replace(/[^a-zA-Z0-9._-]/g, '_')
+
+      if (isUuid(user?.id)) {
+        const path = `${user.id}/assignment-materials/${Date.now()}-${safeName}`
+        const { error } = await supabase.storage
+          .from('faculty-files')
+          .upload(path, file, { upsert: true, contentType: 'application/pdf', cacheControl: '3600' })
+        if (!error) {
+          const { data } = supabase.storage.from('faculty-files').getPublicUrl(path)
+          return {
+            file: {
+              id,
+              kind: 'pdf',
+              name: file.name || safeName,
+              url: data.publicUrl,
+              path,
+              size: file.size || 0,
+              uploaded_at: new Date().toISOString(),
+            },
+          }
+        }
+        console.warn('Supabase PDF upload fallback to local URL:', error.message)
+      }
+
+      return {
+        file: {
+          id,
+          kind: 'pdf',
+          name: file.name || safeName,
+          url: URL.createObjectURL(file),
+          size: file.size || 0,
+          uploaded_at: new Date().toISOString(),
+        },
+      }
+    } catch (e) {
+      showToast(e.message || 'PDF upload failed', 'error')
       return { error: e }
     }
   }, [user, showToast])
@@ -1371,6 +1420,7 @@ export function AppProvider({ children }) {
     deleteAssignment,
     submissions,
     fetchSubmissions,
+    uploadAssignmentPdf,
     uploadSubmissionPhoto,
     submitAssignment,
     gradeSubmission,

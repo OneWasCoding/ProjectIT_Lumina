@@ -371,6 +371,9 @@ export default function TopicStudyPage({ onBackToTOC }) {
       {showAiQuizModal && aiQuizDeck && (
         <AiQuizGenerator
           slides={aiQuizDeck.extractedSlides || []}
+          fileUrl={aiQuizDeck.fileUrl}
+          fileName={aiQuizDeck.fileName}
+          kind={aiQuizDeck.kind}
           topicId={currentTopic.id}
           topicTitle={currentTopic.title}
           onClose={() => {
@@ -698,6 +701,17 @@ function PresentationSection({
                   className="btn btn-gradient btn-sm flex items-center gap-6"
                   onClick={() => onGenerateAiQuiz(activeDeck)}
                   id="btn-generate-ai-quiz-from-deck"
+                >
+                  <Sparkles style={{ width: 15, height: 15 }} />
+                  Generate AI Quiz
+                </button>
+              )}
+              {isFaculty && activeDeck && activeDeck.kind === 'pdf' && activeDeck.rawItem && onGenerateAiQuiz && !activeDeck?.extractedSlides?.length && (
+                <button
+                  type="button"
+                  className="btn btn-gradient btn-sm flex items-center gap-6"
+                  onClick={() => onGenerateAiQuiz({ ...activeDeck, needsPdfExtract: true })}
+                  id="btn-generate-ai-quiz-from-pdf"
                 >
                   <Sparkles style={{ width: 15, height: 15 }} />
                   Generate AI Quiz
