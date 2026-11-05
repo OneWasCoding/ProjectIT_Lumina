@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
-import { generateQuizFromSlides, slidesToText } from '../lib/groqClient.js'
+import { generateQuizFromSlides, slidesToText, isGroqConfigured } from '../lib/groqClient.js'
 import { extractTextFromFile } from '../lib/presentationParser.js'
 import { Sparkles, BrainCircuit, RotateCcw, Trash2, Plus, X, CheckCircle2, Save, AlertCircle } from 'lucide-react'
 
@@ -20,7 +20,7 @@ export default function AiQuizGenerator({ slides, topicId, topicTitle, onClose, 
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
-  const isConfigured = Boolean(import.meta.env.VITE_GROQ_API_KEY)
+  const isConfigured = isGroqConfigured()
 
   useEffect(() => {
     setSourceSlides(Array.isArray(slides) ? slides : [])
