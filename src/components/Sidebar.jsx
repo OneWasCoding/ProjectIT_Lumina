@@ -11,9 +11,10 @@ import {
   Megaphone,
   UserCircle,
   ChevronRight,
+  X,
 } from 'lucide-react'
 
-export default function Sidebar({ currentPage, setCurrentPage, open }) {
+export default function Sidebar({ currentPage, setCurrentPage, open, onClose }) {
   const { profile, user, logout, selectedSubject, setSelectedSubject, currentTopic } = useApp()
 
   const displayName = profile?.full_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'User'
@@ -34,16 +35,26 @@ export default function Sidebar({ currentPage, setCurrentPage, open }) {
     : [{ id: 'dashboard', label: 'My Subjects', icon: Layers }]
 
   return (
-    <aside className={`sidebar ${open ? 'open' : ''}`}>
+    <aside className={`sidebar ${open ? 'open' : ''}`} aria-label="Main navigation">
       {/* Brand Header */}
       <div className="sidebar-logo">
         <div className="sidebar-logo-icon">L</div>
-        <div>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <span className="sidebar-logo-text">Lumina</span>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500, letterSpacing: '0.04em' }}>
             LEARNING SYSTEM
           </div>
         </div>
+        {onClose && (
+          <button
+            type="button"
+            className="sidebar-close-btn"
+            onClick={onClose}
+            aria-label="Close navigation menu"
+          >
+            <X style={{ width: 18, height: 18 }} />
+          </button>
+        )}
       </div>
 
       {/* Current Active Subject Card */}

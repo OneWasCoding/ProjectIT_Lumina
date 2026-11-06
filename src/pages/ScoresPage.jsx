@@ -593,10 +593,10 @@ export default function ScoresPage() {
   const passedStudentsCount = gradedStudentRows.filter(s => s.passed).length
 
   return (
-    <div className="page-body">
+    <>
       {/* Page Title & Export Toolbar */}
-      <div className="page-header" style={{ marginBottom: 24, padding: 0 }}>
-        <div className="flex items-center justify-between" style={{ flexWrap: 'wrap', gap: 16 }}>
+      <div className="page-header">
+        <div className="page-header-inner" style={{ flexWrap: 'wrap', gap: 16 }}>
           <div>
             <h1 className="page-title">
               {isFaculty ? 'Class Gradebook & Overall Student Grades' : 'My Overall Grades & Performance'}
@@ -609,7 +609,7 @@ export default function ScoresPage() {
           </div>
 
           {/* Export Action Buttons */}
-          <div className="export-btn-group" style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+          <div className="export-btn-group">
             <button
               className="btn btn-gradient flex items-center gap-6"
               onClick={handleExportSpreadsheet}
@@ -617,7 +617,7 @@ export default function ScoresPage() {
               title="Download Multi-Sheet Official Excel Gradebook (.xlsx)"
             >
               <TableIcon style={{ width: 16, height: 16 }} />
-              Download Excel Gradebook (.xlsx)
+              <span>Download Excel (.xlsx)</span>
             </button>
 
             <button
@@ -627,7 +627,7 @@ export default function ScoresPage() {
               title="Save Gradebook as PDF"
             >
               <FileText style={{ width: 16, height: 16, color: '#ff4757' }} />
-              Save PDF
+              <span>Save PDF</span>
             </button>
 
             <button
@@ -637,11 +637,13 @@ export default function ScoresPage() {
               title="Print Official Grade Sheet"
             >
               <Printer style={{ width: 16, height: 16, color: '#7c5cfc' }} />
-              Print
+              <span>Print</span>
             </button>
           </div>
         </div>
       </div>
+
+      <div className="page-body">
 
       {/* KPI Summary Cards */}
       <div className="grid-4 mb-24">
@@ -1236,6 +1238,7 @@ export default function ScoresPage() {
           </div>
         </div>
       )}
-    </div>
+      </div>
+    </>
   )
 }
